@@ -1,4 +1,5 @@
 mod log_entry;
+mod parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
