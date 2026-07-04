@@ -1,6 +1,7 @@
 mod filter;
 mod log_entry;
 mod parser;
+mod recorder;
 mod ring_buffer;
 mod statistics;
 
