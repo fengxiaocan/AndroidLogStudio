@@ -6,9 +6,12 @@ mod parser;
 mod recorder;
 mod ring_buffer;
 mod statistics;
+mod websocket;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("ALS_ENGINE_READY port=0");
+    let port = websocket::run_server().await?;
+    println!("ALS_ENGINE_READY port={port}");
+    tokio::signal::ctrl_c().await?;
     Ok(())
 }
