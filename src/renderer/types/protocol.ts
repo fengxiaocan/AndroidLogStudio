@@ -54,3 +54,12 @@ export type ServerMessage =
   | { type: 'search_results'; deviceId: string; matches: number[] }
   | { type: 'recorder_status'; deviceId: string; enabled: boolean; path: string | null; warning: string | null }
   | { type: 'error'; message: string };
+
+declare global {
+  interface Window {
+    als: {
+      version: string;
+      getEngineUrl: () => Promise<string>;
+    };
+  }
+}
