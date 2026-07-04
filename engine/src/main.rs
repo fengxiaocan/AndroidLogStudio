@@ -1,5 +1,8 @@
+mod filter;
 mod log_entry;
 mod parser;
+mod ring_buffer;
+mod statistics;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
