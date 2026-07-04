@@ -1,3 +1,5 @@
+mod adb;
+mod device;
 mod filter;
 mod log_entry;
 mod parser;
