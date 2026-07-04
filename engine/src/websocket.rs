@@ -23,7 +23,11 @@ const SNAPSHOT_LIMIT: usize = 5_000;
 const ALLOWED_ORIGINS: &[&str] = &["http://127.0.0.1:5173", "http://localhost:5173"];
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ClientMessage {
     ConnectDevice { device_id: String },
     DisconnectDevice { device_id: String },
@@ -32,7 +36,11 @@ pub enum ClientMessage {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ServerMessage {
     DeviceList {
         devices: Vec<DeviceInfo>,
@@ -276,10 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn client_message_protocol_uses_snake_case_tag_and_device_id() {
+    fn client_message_protocol_uses_snake_case_tag_and_camel_case_fields() {
         let message = serde_json::from_value::<ClientMessage>(json!({
             "type": "connect_device",
-            "device_id": "mock-device"
+            "deviceId": "mock-device"
         }))
         .expect("connect_device should deserialize");
         assert!(
@@ -288,12 +296,35 @@ mod tests {
 
         let message = serde_json::from_value::<ClientMessage>(json!({
             "type": "disconnect_device",
-            "device_id": "mock-device"
+            "deviceId": "mock-device"
         }))
         .expect("disconnect_device should deserialize");
         assert!(
             matches!(message, ClientMessage::DisconnectDevice { device_id } if device_id == MOCK_DEVICE_ID)
         );
+
+        let message = serde_json::from_value::<ClientMessage>(json!({
+            "type": "set_filter",
+            "deviceId": "mock-device",
+            "query": "level:error"
+        }))
+        .expect("set_filter should deserialize");
+        assert!(
+            matches!(message, ClientMessage::SetFilter { device_id, query } if device_id == MOCK_DEVICE_ID && query == "level:error")
+        );
+    }
+
+    #[test]
+    fn new_logs_message_uses_camel_case_device_id() {
+        let payload = serde_json::to_value(ServerMessage::NewLogs {
+            device_id: MOCK_DEVICE_ID.to_string(),
+            logs: Vec::new(),
+        })
+        .expect("new_logs serializes");
+
+        assert_eq!(payload["type"], "new_logs");
+        assert_eq!(payload["deviceId"], MOCK_DEVICE_ID);
+        assert!(payload.get("device_id").is_none());
     }
 
     #[test]
@@ -320,7 +351,8 @@ mod tests {
             .expect("recorder status serializes");
 
         assert_eq!(payload["type"], "recorder_status");
-        assert_eq!(payload["device_id"], MOCK_DEVICE_ID);
+        assert_eq!(payload["deviceId"], MOCK_DEVICE_ID);
+        assert!(payload.get("device_id").is_none());
         assert_eq!(payload["enabled"], true);
         assert_eq!(payload["path"], "logs/mock.log");
         assert_eq!(payload["warning"], "disk nearly full");
