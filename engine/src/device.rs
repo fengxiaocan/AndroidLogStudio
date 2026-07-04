@@ -68,12 +68,15 @@ impl DeviceContext {
     }
 
     pub fn latest_visible_snapshot(&self, limit: usize) -> DeviceSnapshot {
-        let logs = self
+        let mut logs = self
             .buffer
-            .latest(limit)
+            .latest(usize::MAX)
             .into_iter()
             .filter(|entry| !entry.hidden)
-            .collect();
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>();
+        logs.reverse();
 
         DeviceSnapshot {
             logs,
@@ -89,15 +92,24 @@ mod tests {
     use crate::recorder::RecorderConfig;
     use tempfile::tempdir;
 
-    #[test]
-    fn ingests_and_snapshots_visible_lines() {
+    fn new_test_device(buffer_capacity: usize) -> DeviceContext {
         let dir = tempdir().expect("tempdir");
         let recorder = Recorder::new(RecorderConfig {
             enabled: false,
             root: dir.path().to_path_buf(),
             device_name: "mock".to_string(),
         });
-        let mut device = DeviceContext::new("mock".to_string(), "Mock".to_string(), 10, recorder);
+        DeviceContext::new(
+            "mock".to_string(),
+            "Mock".to_string(),
+            buffer_capacity,
+            recorder,
+        )
+    }
+
+    #[test]
+    fn ingests_and_snapshots_visible_lines() {
+        let mut device = new_test_device(10);
         device.set_filter(FilterQuery::parse("level:error"));
 
         device.ingest_line("07-04 12:34:56.789  1234  5678 I Tag: info");
@@ -107,5 +119,23 @@ mod tests {
         assert_eq!(snapshot.logs.len(), 1);
         assert_eq!(snapshot.logs[0].message, "error");
         assert_eq!(snapshot.stats.errors, 1);
+    }
+
+    #[test]
+    fn limits_after_filtering_visible_lines() {
+        let mut device = new_test_device(5);
+        device.set_filter(FilterQuery::parse("level:error"));
+
+        device.ingest_line("07-04 12:34:56.000  1234  5678 E Tag: first error");
+        device.ingest_line("07-04 12:34:57.000  1234  5678 E Tag: second error");
+        device.ingest_line("07-04 12:34:58.000  1234  5678 E Tag: third error");
+        device.ingest_line("07-04 12:34:59.000  1234  5678 I Tag: hidden info one");
+        device.ingest_line("07-04 12:35:00.000  1234  5678 I Tag: hidden info two");
+
+        let snapshot = device.latest_visible_snapshot(2);
+
+        assert_eq!(snapshot.logs.len(), 2);
+        assert_eq!(snapshot.logs[0].message, "second error");
+        assert_eq!(snapshot.logs[1].message, "third error");
     }
 }
