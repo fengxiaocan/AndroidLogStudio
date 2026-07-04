@@ -4,6 +4,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 let engineProcess: ChildProcessWithoutNullStreams | null = null;
 let engineUrl = '';
+let resolveEngineReady: ((url: string) => void) | null = null;
+const engineReady = new Promise<string>((resolve) => {
+  resolveEngineReady = resolve;
+});
 
 function engineBinaryPath() {
   const executable = process.platform === 'win32' ? 'als-engine.exe' : 'als-engine';
@@ -28,6 +32,8 @@ function startEngine() {
 
     if (readyMatch) {
       engineUrl = `ws://127.0.0.1:${readyMatch[1]}/ws`;
+      resolveEngineReady?.(engineUrl);
+      resolveEngineReady = null;
     }
   });
 
@@ -59,7 +65,7 @@ async function createWindow() {
   }
 }
 
-ipcMain.handle('engine:get-url', () => engineUrl);
+ipcMain.handle('engine:get-url', async () => engineUrl || engineReady);
 
 app.whenReady().then(() => {
   startEngine();
