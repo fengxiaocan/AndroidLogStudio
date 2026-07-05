@@ -3,6 +3,7 @@ use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, LogEntry, StatisticsSnapshot};
 use crate::recorder::{Recorder, RecorderConfig, RecorderStatus};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State};
 use axum::http::{header::ORIGIN, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -21,6 +22,16 @@ const MOCK_LOG_LINE: &str = "07-04 12:34:56.789  1234  5678 I ActivityManager: M
 const BUFFER_CAPACITY: usize = 1_000_000;
 const SNAPSHOT_LIMIT: usize = 5_000;
 const ALLOWED_ORIGINS: &[&str] = &["http://127.0.0.1:5173", "http://localhost:5173", "file://"];
+
+#[derive(Clone)]
+struct AppState {
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WsQuery {
+    token: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(
@@ -77,10 +88,16 @@ pub enum ServerMessage {
     },
 }
 
-pub async fn run_server() -> anyhow::Result<u16> {
+pub struct ServerInfo {
+    pub port: u16,
+}
+
+pub async fn run_server(token: String) -> anyhow::Result<ServerInfo> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    let app = Router::new().route("/ws", get(ws_handler));
+    let app = Router::new()
+        .route("/ws", get(ws_handler))
+        .with_state(AppState { token });
 
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
@@ -88,12 +105,17 @@ pub async fn run_server() -> anyhow::Result<u16> {
         }
     });
 
-    Ok(port)
+    Ok(ServerInfo { port })
 }
 
-async fn ws_handler(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
+async fn ws_handler(
+    State(state): State<AppState>,
+    Query(query): Query<WsQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
     let origin = headers.get(ORIGIN).and_then(|value| value.to_str().ok());
-    if !is_allowed_origin(origin) {
+    if !is_allowed_origin(origin) || !is_allowed_token(query.token.as_deref(), &state.token) {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -102,6 +124,10 @@ async fn ws_handler(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
 
 fn is_allowed_origin(origin: Option<&str>) -> bool {
     origin.is_none_or(|origin| ALLOWED_ORIGINS.contains(&origin))
+}
+
+fn is_allowed_token(candidate: Option<&str>, expected: &str) -> bool {
+    candidate.is_some_and(|candidate| candidate == expected)
 }
 
 async fn handle_socket(socket: WebSocket) {
@@ -325,6 +351,13 @@ mod tests {
         assert!(is_allowed_origin(Some("http://localhost:5173")));
         assert!(is_allowed_origin(Some("file://")));
         assert!(!is_allowed_origin(Some("http://evil.example")));
+    }
+
+    #[test]
+    fn websocket_token_must_match_server_secret() {
+        assert!(is_allowed_token(Some("secret"), "secret"));
+        assert!(!is_allowed_token(None, "secret"));
+        assert!(!is_allowed_token(Some("wrong"), "secret"));
     }
 
     #[test]

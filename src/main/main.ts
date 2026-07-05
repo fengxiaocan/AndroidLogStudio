@@ -1,6 +1,11 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+
+const mainDir = path.dirname(fileURLToPath(import.meta.url));
+const engineToken = randomUUID();
 
 let engineProcess: ChildProcessWithoutNullStreams | null = null;
 let engineUrl = '';
@@ -24,14 +29,16 @@ function startEngine() {
     return;
   }
 
-  engineProcess = spawn(engineBinaryPath());
+  engineProcess = spawn(engineBinaryPath(), [], {
+    env: { ...process.env, ALS_ENGINE_TOKEN: engineToken },
+  });
 
   engineProcess.stdout.on('data', (data: Buffer) => {
     const output = data.toString();
     const readyMatch = output.match(/ALS_ENGINE_READY port=(\d+)/);
 
     if (readyMatch) {
-      engineUrl = `ws://127.0.0.1:${readyMatch[1]}/ws`;
+      engineUrl = `ws://127.0.0.1:${readyMatch[1]}/ws?token=${encodeURIComponent(engineToken)}`;
       resolveEngineReady?.(engineUrl);
       resolveEngineReady = null;
     }
@@ -52,7 +59,7 @@ async function createWindow() {
     width: 1400,
     height: 900,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(mainDir, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -61,7 +68,7 @@ async function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     await win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    await win.loadFile(path.join(__dirname, '../renderer/index.html'));
+    await win.loadFile(path.join(mainDir, '../renderer/index.html'));
   }
 }
 
