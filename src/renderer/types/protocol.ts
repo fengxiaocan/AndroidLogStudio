@@ -49,6 +49,7 @@ export interface SearchOptions {
 
 export type ServerMessage =
   | { type: 'new_logs'; deviceId: string; logs: LogEntry[] }
+  | { type: 'log_snapshot'; deviceId: string; logs: LogEntry[] }
   | { type: 'device_list'; devices: DeviceInfo[] }
   | { type: 'statistics'; deviceId: string; stats: StatisticsSnapshot }
   | { type: 'search_results'; deviceId: string; matches: number[] }

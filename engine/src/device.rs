@@ -48,6 +48,16 @@ impl DeviceContext {
 
     pub fn set_filter(&mut self, query: FilterQuery) {
         self.filter = query;
+        let mut hidden = 0;
+
+        for entry in self.buffer.iter_mut() {
+            entry.hidden = !self.filter.matches(entry);
+            if entry.hidden {
+                hidden += 1;
+            }
+        }
+
+        self.statistics.set_hidden(hidden);
     }
 
     pub fn ingest_line(&mut self, raw_line: &str) -> Option<LogEntry> {
@@ -164,5 +174,19 @@ mod tests {
 
         assert_eq!(device.search_visible_sequences("alpha"), vec![1, 3]);
         assert!(device.search_visible_sequences("").is_empty());
+    }
+
+    #[test]
+    fn set_filter_recomputes_buffer_visibility_and_hidden_count() {
+        let mut device = new_test_device(10);
+
+        device.ingest_line("07-04 12:34:56.000  1234  5678 I Tag: info");
+        device.ingest_line("07-04 12:34:57.000  1234  5678 E Tag: error");
+        device.set_filter(FilterQuery::parse("level:error"));
+
+        let snapshot = device.latest_visible_snapshot(500);
+        assert_eq!(snapshot.logs.len(), 1);
+        assert_eq!(snapshot.logs[0].message, "error");
+        assert_eq!(snapshot.stats.hidden, 1);
     }
 }

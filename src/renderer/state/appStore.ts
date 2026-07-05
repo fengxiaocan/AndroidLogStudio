@@ -58,6 +58,12 @@ export const useAppStore = create<AppState>((set) => ({
           return { logs: [...state.logs, ...message.logs].slice(-limit) };
         });
         break;
+      case 'log_snapshot':
+        set((state) => {
+          const limit = Math.min(state.visibleLimit, MAX_VISIBLE_LIMIT);
+          return { logs: message.logs.slice(-limit) };
+        });
+        break;
       case 'statistics':
         set({ stats: message.stats });
         break;

@@ -21,6 +21,10 @@ impl Statistics {
         }
     }
 
+    pub fn set_hidden(&mut self, hidden: u64) {
+        self.hidden = hidden;
+    }
+
     pub fn snapshot(&self) -> StatisticsSnapshot {
         StatisticsSnapshot {
             errors: self.errors,

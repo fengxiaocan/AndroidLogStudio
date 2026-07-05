@@ -24,8 +24,8 @@ impl<T: Clone> RingBuffer<T> {
         self.values.iter().skip(start).cloned().collect()
     }
 
-    pub fn len(&self) -> usize {
-        self.values.len()
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.values.iter_mut()
     }
 }
 

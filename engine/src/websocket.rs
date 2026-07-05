@@ -20,7 +20,7 @@ const MOCK_DEVICE_NAME: &str = "Mock Device";
 const MOCK_LOG_LINE: &str = "07-04 12:34:56.789  1234  5678 I ActivityManager: Mock log line";
 const BUFFER_CAPACITY: usize = 1_000_000;
 const SNAPSHOT_LIMIT: usize = 5_000;
-const ALLOWED_ORIGINS: &[&str] = &["http://127.0.0.1:5173", "http://localhost:5173"];
+const ALLOWED_ORIGINS: &[&str] = &["http://127.0.0.1:5173", "http://localhost:5173", "file://"];
 
 #[derive(Debug, Deserialize)]
 #[serde(
@@ -51,6 +51,10 @@ pub enum ServerMessage {
         devices: Vec<DeviceInfo>,
     },
     NewLogs {
+        device_id: String,
+        logs: Vec<LogEntry>,
+    },
+    LogSnapshot {
         device_id: String,
         logs: Vec<LogEntry>,
     },
@@ -156,7 +160,7 @@ async fn handle_client_text(
                 return false;
             }
             device.set_filter(FilterQuery::parse(&query));
-            true
+            send_visible_snapshot(sender, device).await && send_statistics(sender, device).await
         }
         Ok(ClientMessage::SetSearch {
             device_id,
@@ -218,7 +222,23 @@ async fn send_mock_tick(
         }
     }
 
+    if !send_recorder_status(sender, device).await {
+        return false;
+    }
+
     send_statistics(sender, device).await
+}
+
+async fn send_visible_snapshot(
+    sender: &mut SplitSink<WebSocket, Message>,
+    device: &DeviceContext,
+) -> bool {
+    let snapshot = device.latest_visible_snapshot(SNAPSHOT_LIMIT);
+    let message = ServerMessage::LogSnapshot {
+        device_id: device.device_id.clone(),
+        logs: snapshot.logs,
+    };
+    send_server_message(sender, &message).await
 }
 
 async fn send_statistics(
@@ -299,10 +319,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn origin_allowlist_accepts_dev_origins_and_non_browser_requests() {
+    fn origin_allowlist_accepts_dev_packaged_and_non_browser_requests() {
         assert!(is_allowed_origin(None));
         assert!(is_allowed_origin(Some("http://127.0.0.1:5173")));
         assert!(is_allowed_origin(Some("http://localhost:5173")));
+        assert!(is_allowed_origin(Some("file://")));
         assert!(!is_allowed_origin(Some("http://evil.example")));
     }
 
@@ -362,6 +383,21 @@ mod tests {
 
         assert_eq!(payload["type"], "new_logs");
         assert_eq!(payload["deviceId"], MOCK_DEVICE_ID);
+        assert_eq!(payload["logs"], json!([]));
+        assert!(payload.get("device_id").is_none());
+    }
+
+    #[test]
+    fn log_snapshot_message_uses_replacement_protocol() {
+        let payload = serde_json::to_value(ServerMessage::LogSnapshot {
+            device_id: MOCK_DEVICE_ID.to_string(),
+            logs: Vec::new(),
+        })
+        .expect("log_snapshot serializes");
+
+        assert_eq!(payload["type"], "log_snapshot");
+        assert_eq!(payload["deviceId"], MOCK_DEVICE_ID);
+        assert_eq!(payload["logs"], json!([]));
         assert!(payload.get("device_id").is_none());
     }
 
