@@ -6,10 +6,11 @@
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "dev:electron": "electron .",
-    "build": "tsc --noEmit && tsc -p tsconfig.main.json && vite build",
+    "dev:electron": "npm run engine:build && electron .",
+    "build": "npm run engine:build && tsc --noEmit && tsc -p tsconfig.main.json && vite build",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "engine:build": "cargo build -p als-engine",
     "engine:test": "cargo test -p als-engine",
     "engine:run": "cargo run -p als-engine"
   },

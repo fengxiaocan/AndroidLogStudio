@@ -10,8 +10,10 @@ const engineToken = randomUUID();
 let engineProcess: ChildProcessWithoutNullStreams | null = null;
 let engineUrl = '';
 let resolveEngineReady: ((url: string) => void) | null = null;
-const engineReady = new Promise<string>((resolve) => {
+let rejectEngineReady: ((error: Error) => void) | null = null;
+const engineReady = new Promise<string>((resolve, reject) => {
   resolveEngineReady = resolve;
+  rejectEngineReady = reject;
 });
 
 function engineBinaryPath() {
@@ -22,6 +24,14 @@ function engineBinaryPath() {
   }
 
   return path.join(process.cwd(), 'target', 'debug', executable);
+}
+
+function failEngineStartup(message: string) {
+  const error = new Error(message);
+  console.error(`[als-engine] ${message}`);
+  rejectEngineReady?.(error);
+  rejectEngineReady = null;
+  resolveEngineReady = null;
 }
 
 function startEngine() {
@@ -41,6 +51,7 @@ function startEngine() {
       engineUrl = `ws://127.0.0.1:${readyMatch[1]}/ws?token=${encodeURIComponent(engineToken)}`;
       resolveEngineReady?.(engineUrl);
       resolveEngineReady = null;
+      rejectEngineReady = null;
     }
   });
 
@@ -48,9 +59,19 @@ function startEngine() {
     console.error(`[als-engine] ${data.toString().trim()}`);
   });
 
-  engineProcess.on('exit', () => {
+  engineProcess.on('error', (error) => {
     engineProcess = null;
     engineUrl = '';
+    failEngineStartup(`failed to start ${engineBinaryPath()}: ${error.message}`);
+  });
+
+  engineProcess.on('exit', (code, signal) => {
+    engineProcess = null;
+    engineUrl = '';
+
+    if (resolveEngineReady) {
+      failEngineStartup(`engine exited before readiness (code=${code ?? 'none'}, signal=${signal ?? 'none'})`);
+    }
   });
 }
 
