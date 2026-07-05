@@ -5,27 +5,266 @@
   color: #e6edf3;
 }
 
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
 body {
   margin: 0;
+  background: #101318;
+}
+
+button,
+input {
+  font: inherit;
 }
 
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-rows: 48px 1fr;
+  grid-template-rows: 56px auto auto minmax(0, 1fr) 34px;
+  background: #101318;
 }
 
 .toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) minmax(240px, 360px);
+  gap: 16px;
   align-items: center;
   padding: 0 16px;
   border-bottom: 1px solid #263140;
   background: #151a21;
-  font-weight: 600;
 }
 
-.empty-state {
-  display: grid;
-  place-items: center;
+.toolbar h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.device-tabs {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  min-width: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid #263140;
+  background: #101318;
+  overflow-x: auto;
+}
+
+.device-tabs__empty {
   color: #8b949e;
+  font-size: 13px;
+}
+
+.device-tab {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  padding: 8px 12px;
+  border: 1px solid #263140;
+  border-radius: 8px;
+  background: #151a21;
+  color: #8b949e;
+  text-align: left;
+  cursor: default;
+}
+
+.device-tab.active {
+  border-color: #7ee787;
+  color: #e6edf3;
+  box-shadow: inset 0 0 0 1px rgb(126 231 135 / 24%);
+}
+
+.device-tab__name {
+  font-weight: 700;
+}
+
+.device-tab__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.query-region {
+  padding: 12px 16px;
+  border-bottom: 1px solid #263140;
+  background: #151a21;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field__label {
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.field__input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #263140;
+  border-radius: 8px;
+  background: #101318;
+  color: #e6edf3;
+  padding: 0 12px;
+  outline: none;
+}
+
+.field__input:focus {
+  border-color: #7ee787;
+  box-shadow: 0 0 0 3px rgb(126 231 135 / 12%);
+}
+
+.field__input::placeholder {
+  color: #6f7782;
+}
+
+.content-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.log-view,
+.stats-panel {
+  min-height: 0;
+  border: 1px solid #263140;
+  border-radius: 10px;
+  background: #151a21;
+  overflow: hidden;
+}
+
+.log-list {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 88px 56px 56px 28px minmax(120px, 220px) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  min-width: 760px;
+  padding: 4px 10px;
+  border-bottom: 1px solid rgb(38 49 64 / 55%);
+  color: #c9d1d9;
+}
+
+.log-row__time,
+.log-row__pid,
+.log-row__tid,
+.log-row__tag {
+  color: #8b949e;
+}
+
+.log-row__level {
+  font-weight: 800;
+}
+
+.log-row--info .log-row__level {
+  color: #7ee787;
+}
+
+.log-row--warn .log-row__level {
+  color: #ffd166;
+}
+
+.log-row--error .log-row__level,
+.log-row--assert .log-row__level {
+  color: #ff6b6b;
+}
+
+.log-row__message {
+  overflow-wrap: anywhere;
+}
+
+mark {
+  border-radius: 3px;
+  background: #ffd166;
+  color: #101318;
+  padding: 0 2px;
+}
+
+.stats-panel {
+  padding: 14px;
+}
+
+.stats-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.stats-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #263140;
+  border-radius: 8px;
+  background: #101318;
+}
+
+.stats-item dt {
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stats-item dd {
+  margin: 0;
+  color: #e6edf3;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.stats-item--error dd {
+  color: #ff6b6b;
+}
+
+.stats-item--warn dd {
+  color: #ffd166;
+}
+
+.status-bar {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  min-width: 0;
+  padding: 0 16px;
+  border-top: 1px solid #263140;
+  background: #151a21;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.status {
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.status--connected {
+  color: #7ee787;
+}
+
+.status--disconnected,
+.status-bar strong {
+  color: #ffd166;
 }
