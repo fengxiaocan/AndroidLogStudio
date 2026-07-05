@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { EngineClient } from './api/engineClient';
 import { DeviceTabs } from './components/DeviceTabs';
 import { LogView } from './components/LogView';
@@ -34,6 +34,17 @@ export function App() {
     void clientRef.current.connect();
   }, [handleServerMessage]);
 
+  const handleFilterChange = useCallback(
+    (next: string) => {
+      setFilterQuery(next);
+
+      if (activeDeviceId) {
+        clientRef.current?.send({ type: 'set_filter', deviceId: activeDeviceId, query: next });
+      }
+    },
+    [activeDeviceId, setFilterQuery],
+  );
+
   return (
     <main className="app-shell">
       <header className="toolbar">
@@ -42,7 +53,7 @@ export function App() {
       </header>
       <DeviceTabs devices={devices} activeDeviceId={activeDeviceId} />
       <section className="query-region" aria-label="Query controls">
-        <QueryBar value={filterQuery} onChange={setFilterQuery} />
+        <QueryBar value={filterQuery} onChange={handleFilterChange} />
       </section>
       <section className="content-grid" aria-label="Log workbench">
         <LogView logs={logs} searchQuery={searchQuery} />
