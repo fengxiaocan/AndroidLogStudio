@@ -45,11 +45,27 @@ export function App() {
     [activeDeviceId, setFilterQuery],
   );
 
+  const handleSearchChange = useCallback(
+    (next: string) => {
+      setSearchQuery(next);
+
+      if (activeDeviceId) {
+        clientRef.current?.send({
+          type: 'set_search',
+          deviceId: activeDeviceId,
+          query: next,
+          options: { regex: false, caseSensitive: false, wholeWord: false },
+        });
+      }
+    },
+    [activeDeviceId, setSearchQuery],
+  );
+
   return (
     <main className="app-shell">
       <header className="toolbar">
         <h1>Android Logcat Studio</h1>
-        <SearchBar value={searchQuery} onChange={setSearchQuery} />
+        <SearchBar value={searchQuery} onChange={handleSearchChange} />
       </header>
       <DeviceTabs devices={devices} activeDeviceId={activeDeviceId} />
       <section className="query-region" aria-label="Query controls">

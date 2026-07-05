@@ -32,6 +32,11 @@ pub enum ClientMessage {
     ConnectDevice { device_id: String },
     DisconnectDevice { device_id: String },
     SetFilter { device_id: String, query: String },
+    SetSearch {
+        device_id: String,
+        query: String,
+        options: serde_json::Value,
+    },
     GetStatistics { device_id: String },
 }
 
@@ -52,6 +57,10 @@ pub enum ServerMessage {
     Statistics {
         device_id: String,
         stats: StatisticsSnapshot,
+    },
+    SearchResults {
+        device_id: String,
+        matches: Vec<u64>,
     },
     RecorderStatus {
         device_id: String,
@@ -148,6 +157,20 @@ async fn handle_client_text(
             }
             device.set_filter(FilterQuery::parse(&query));
             true
+        }
+        Ok(ClientMessage::SetSearch {
+            device_id,
+            query,
+            options: _,
+        }) => {
+            if !ensure_mock_device(sender, &device_id).await {
+                return false;
+            }
+            let message = ServerMessage::SearchResults {
+                device_id: MOCK_DEVICE_ID.to_string(),
+                matches: device.search_visible_sequences(&query),
+            };
+            send_server_message(sender, &message).await
         }
         Ok(ClientMessage::GetStatistics { device_id }) => {
             if !ensure_mock_device(sender, &device_id).await {
@@ -312,6 +335,21 @@ mod tests {
         assert!(
             matches!(message, ClientMessage::SetFilter { device_id, query } if device_id == MOCK_DEVICE_ID && query == "level:error")
         );
+
+        let message = serde_json::from_value::<ClientMessage>(json!({
+            "type": "set_search",
+            "deviceId": "mock-device",
+            "query": "mock",
+            "options": {
+                "regex": false,
+                "caseSensitive": false,
+                "wholeWord": false
+            }
+        }))
+        .expect("set_search should deserialize");
+        assert!(
+            matches!(message, ClientMessage::SetSearch { device_id, query, options } if device_id == MOCK_DEVICE_ID && query == "mock" && options["caseSensitive"] == false)
+        );
     }
 
     #[test]
@@ -338,6 +376,20 @@ mod tests {
         assert_eq!(payload["type"], "statistics");
         assert!(payload.get("stats").is_some());
         assert!(payload.get("statistics").is_none());
+    }
+
+    #[test]
+    fn search_results_message_uses_camel_case_device_id() {
+        let payload = serde_json::to_value(ServerMessage::SearchResults {
+            device_id: MOCK_DEVICE_ID.to_string(),
+            matches: vec![1, 3],
+        })
+        .expect("search results serializes");
+
+        assert_eq!(payload["type"], "search_results");
+        assert_eq!(payload["deviceId"], MOCK_DEVICE_ID);
+        assert_eq!(payload["matches"], json!([1, 3]));
+        assert!(payload.get("device_id").is_none());
     }
 
     #[test]

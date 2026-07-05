@@ -19,6 +19,7 @@ interface AppState {
   visibleLimit: number;
   filterQuery: string;
   searchQuery: string;
+  searchMatches: number[];
   stats: StatisticsSnapshot;
   connected: boolean;
   recorderPath: string | null;
@@ -35,6 +36,7 @@ export const useAppStore = create<AppState>((set) => ({
   visibleLimit: DEFAULT_VISIBLE_LIMIT,
   filterQuery: '',
   searchQuery: '',
+  searchMatches: [],
   stats: emptyStats,
   connected: false,
   recorderPath: null,
@@ -58,6 +60,9 @@ export const useAppStore = create<AppState>((set) => ({
         break;
       case 'statistics':
         set({ stats: message.stats });
+        break;
+      case 'search_results':
+        set({ searchMatches: message.matches });
         break;
       case 'recorder_status':
         set({ recorderPath: message.path, recorderWarning: message.warning });

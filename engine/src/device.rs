@@ -84,6 +84,20 @@ impl DeviceContext {
             recorder_status: self.recorder_status.clone(),
         }
     }
+
+    pub fn search_visible_sequences(&self, query: &str) -> Vec<u64> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+
+        let query = query.to_lowercase();
+        self.buffer
+            .latest(1_000_000)
+            .into_iter()
+            .filter(|entry| !entry.hidden && entry.message.to_lowercase().contains(&query))
+            .map(|entry| entry.seq)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +151,18 @@ mod tests {
         assert_eq!(snapshot.logs.len(), 2);
         assert_eq!(snapshot.logs[0].message, "second error");
         assert_eq!(snapshot.logs[1].message, "third error");
+    }
+
+    #[test]
+    fn searches_visible_messages_case_insensitively() {
+        let mut device = new_test_device(10);
+        device.set_filter(FilterQuery::parse("level:error"));
+
+        device.ingest_line("07-04 12:34:56.000  1234  5678 E Tag: Alpha failure");
+        device.ingest_line("07-04 12:34:57.000  1234  5678 I Tag: alpha hidden");
+        device.ingest_line("07-04 12:34:58.000  1234  5678 E Tag: beta ALPHA");
+
+        assert_eq!(device.search_visible_sequences("alpha"), vec![1, 3]);
+        assert!(device.search_visible_sequences("").is_empty());
     }
 }
