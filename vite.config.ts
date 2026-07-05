@@ -2,6 +2,7 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, defaultExclude } from 'vitest/config';
 
 export default defineConfig({
+  base: './',
   plugins: [react()],
   root: '.',
   build: {
