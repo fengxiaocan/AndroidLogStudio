@@ -132,6 +132,10 @@ impl DeviceManager {
         self.contexts.contains_key(device_id)
     }
 
+    pub fn is_mock_fallback(&self) -> bool {
+        self.adb_status.mode == AdbStatusMode::MockFallback && self.has_device(MOCK_DEVICE_ID)
+    }
+
     pub fn ingest_mock_line(&mut self, raw_line: &str) -> Option<LogEntry> {
         self.contexts
             .get_mut(MOCK_DEVICE_ID)
@@ -210,6 +214,22 @@ mod tests {
         assert_eq!(manager.device_list().len(), 2);
         assert_eq!(manager.device_list()[0].source, DeviceSource::Adb);
         assert_eq!(manager.device_list()[1].device_name, "Galaxy S23");
+    }
+
+    #[test]
+    fn identifies_mock_fallback_mode() {
+        let mock_manager =
+            DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+        let adb_manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "emulator-5554".to_string(),
+                display_name: "Pixel 8".to_string(),
+            }],
+        );
+
+        assert!(mock_manager.is_mock_fallback());
+        assert!(!adb_manager.is_mock_fallback());
     }
 
     #[test]

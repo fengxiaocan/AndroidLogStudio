@@ -160,7 +160,7 @@ async fn handle_socket(socket: WebSocket) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if !send_mock_tick(&mut sender, &mut manager).await {
+                if !send_pending_tick(&mut sender, &mut manager).await {
                     break;
                 }
             }
@@ -245,6 +245,17 @@ async fn validate_device(
         true
     } else {
         send_error(sender, format!("unknown device: {device_id}")).await
+    }
+}
+
+async fn send_pending_tick(
+    sender: &mut SplitSink<WebSocket, Message>,
+    manager: &mut DeviceManager,
+) -> bool {
+    if manager.is_mock_fallback() {
+        send_mock_tick(sender, manager).await
+    } else {
+        true
     }
 }
 
