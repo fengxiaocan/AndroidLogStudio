@@ -56,10 +56,7 @@ impl DeviceManager {
                 available: true,
                 mode: AdbStatusMode::Bundled,
                 path: Some(path),
-                message: format!(
-                    "ADB: {count} device{} connected",
-                    if count == 1 { "" } else { "s" }
-                ),
+                message: format!("ADB: {count} device(s) connected"),
             },
             devices: adb_devices
                 .into_iter()
@@ -115,6 +112,7 @@ mod tests {
 
         assert_eq!(manager.adb_status().available, true);
         assert_eq!(manager.adb_status().mode, AdbStatusMode::Bundled);
+        assert_eq!(manager.adb_status().message, "ADB: 2 device(s) connected");
         assert_eq!(manager.device_list().len(), 2);
         assert_eq!(manager.device_list()[0].source, DeviceSource::Adb);
         assert_eq!(manager.device_list()[1].device_name, "Galaxy S23");
