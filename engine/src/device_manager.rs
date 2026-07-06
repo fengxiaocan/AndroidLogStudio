@@ -132,18 +132,21 @@ impl DeviceManager {
         let (sender, receiver) = mpsc::unbounded_channel();
         self.log_receiver = Some(receiver);
 
-        for device in self
+        let adb_device_ids = self
             .devices
             .iter()
             .filter(|device| device.source == DeviceSource::Adb)
-        {
-            let mut command = logcat_command(adb_path, &device.device_id);
+            .map(|device| device.device_id.clone())
+            .collect::<Vec<_>>();
+
+        for device_id in adb_device_ids {
+            let mut command = logcat_command(adb_path, &device_id);
             command.stdout(Stdio::piped()).stderr(Stdio::null());
 
             match command.spawn() {
                 Ok(mut child) => {
                     if let Some(stdout) = child.stdout.take() {
-                        let serial = device.device_id.clone();
+                        let serial = device_id.clone();
                         let sender = sender.clone();
                         tokio::spawn(async move {
                             let mut lines = BufReader::new(stdout).lines();
@@ -152,16 +155,28 @@ impl DeviceManager {
                             }
                         });
                     }
-                    self.logcat_children.insert(device.device_id.clone(), child);
+                    self.logcat_children.insert(device_id, child);
                 }
                 Err(error) => {
-                    self.adb_status.available = false;
-                    self.adb_status.mode = AdbStatusMode::MockFallback;
-                    self.adb_status.message =
-                        format!("ADB: failed to start logcat: {error}, using mock device");
+                    self.switch_to_mock_fallback(format!(
+                        "ADB: failed to start logcat: {error}, using mock device"
+                    ));
+                    return;
                 }
             }
         }
+    }
+
+    fn switch_to_mock_fallback(&mut self, message: impl Into<String>) {
+        self.stop_logcat_children();
+        *self = Self::mock_fallback(message);
+    }
+
+    fn stop_logcat_children(&mut self) {
+        for child in self.logcat_children.values_mut() {
+            let _ = child.start_kill();
+        }
+        self.logcat_children.clear();
     }
 
     fn from_adb_devices_with_log_root(
@@ -285,9 +300,7 @@ impl DeviceManager {
 
 impl Drop for DeviceManager {
     fn drop(&mut self) {
-        for child in self.logcat_children.values_mut() {
-            let _ = child.start_kill();
-        }
+        self.stop_logcat_children();
     }
 }
 
@@ -351,6 +364,33 @@ mod tests {
         assert_eq!(manager.device_list().len(), 2);
         assert_eq!(manager.device_list()[0].source, DeviceSource::Adb);
         assert_eq!(manager.device_list()[1].device_name, "Galaxy S23");
+    }
+
+    #[tokio::test]
+    async fn logcat_spawn_failure_replaces_adb_state_with_mock_fallback() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "emulator-5554".to_string(),
+                display_name: "Pixel 8".to_string(),
+            }],
+        );
+
+        manager
+            .start_logcat_processes(&PathBuf::from("/definitely/missing/adb"))
+            .await;
+
+        assert_eq!(manager.adb_status().available, false);
+        assert_eq!(manager.adb_status().mode, AdbStatusMode::MockFallback);
+        assert!(manager
+            .adb_status()
+            .message
+            .contains("failed to start logcat"));
+        assert_eq!(manager.device_list().len(), 1);
+        assert_eq!(manager.device_list()[0].source, DeviceSource::Mock);
+        assert!(manager.is_mock_fallback());
+        assert!(manager.has_device(MOCK_DEVICE_ID));
+        assert!(!manager.has_device("emulator-5554"));
     }
 
     #[test]

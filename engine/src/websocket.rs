@@ -278,24 +278,47 @@ async fn send_pending_adb_logs(
     manager: &mut DeviceManager,
 ) -> bool {
     for (device_id, entry) in manager.drain_pending_logs() {
-        if entry.hidden {
-            continue;
-        }
-        let message = ServerMessage::NewLogs {
-            device_id: device_id.clone(),
-            logs: vec![entry],
-        };
-        if !send_server_message(sender, &message).await {
-            return false;
-        }
-        if !send_recorder_status(sender, manager, &device_id).await {
-            return false;
-        }
-        if !send_statistics(sender, manager, &device_id).await {
-            return false;
+        for message in pending_adb_log_messages(&device_id, entry) {
+            match message {
+                PendingAdbLogMessage::NewLogs(entry) => {
+                    let message = ServerMessage::NewLogs {
+                        device_id: device_id.clone(),
+                        logs: vec![entry],
+                    };
+                    if !send_server_message(sender, &message).await {
+                        return false;
+                    }
+                }
+                PendingAdbLogMessage::RecorderStatus => {
+                    if !send_recorder_status(sender, manager, &device_id).await {
+                        return false;
+                    }
+                }
+                PendingAdbLogMessage::Statistics => {
+                    if !send_statistics(sender, manager, &device_id).await {
+                        return false;
+                    }
+                }
+            }
         }
     }
     true
+}
+
+fn pending_adb_log_messages(_device_id: &str, entry: LogEntry) -> Vec<PendingAdbLogMessage> {
+    let mut messages = Vec::new();
+    if !entry.hidden {
+        messages.push(PendingAdbLogMessage::NewLogs(entry));
+    }
+    messages.push(PendingAdbLogMessage::RecorderStatus);
+    messages.push(PendingAdbLogMessage::Statistics);
+    messages
+}
+
+enum PendingAdbLogMessage {
+    NewLogs(LogEntry),
+    RecorderStatus,
+    Statistics,
 }
 
 async fn send_visible_snapshot(
@@ -627,6 +650,33 @@ mod tests {
         assert_eq!(payload["deviceId"], MOCK_DEVICE_ID);
         assert_eq!(payload["matches"], json!([1, 3]));
         assert!(payload.get("device_id").is_none());
+    }
+
+    #[test]
+    fn pending_adb_log_messages_include_stats_for_hidden_entries() {
+        let messages = pending_adb_log_messages(
+            "emulator-5554",
+            LogEntry {
+                seq: 1,
+                timestamp: 0,
+                date: "07-04".to_string(),
+                time: "12:00:00.000".to_string(),
+                pid: 1234,
+                tid: 5678,
+                level: crate::log_entry::LogLevel::Error,
+                tag: "ActivityManager".to_string(),
+                message: "Hidden crash".to_string(),
+                package_name: Some("com.example".to_string()),
+                foreground: None,
+                background: None,
+                hidden: true,
+                bookmarked: false,
+            },
+        );
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0], PendingAdbLogMessage::RecorderStatus));
+        assert!(matches!(messages[1], PendingAdbLogMessage::Statistics));
     }
 
     #[test]
