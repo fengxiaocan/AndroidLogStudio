@@ -153,7 +153,7 @@ async fn handle_socket(socket: WebSocket) {
     if !send_adb_status(&mut sender, manager.adb_status()).await {
         return;
     }
-    if !send_recorder_status(&mut sender, &manager, MOCK_DEVICE_ID).await {
+    if !send_startup_recorder_statuses(&mut sender, &manager).await {
         return;
     }
 
@@ -356,6 +356,26 @@ fn adb_status_message(status: &AdbStatus) -> ServerMessage {
     }
 }
 
+async fn send_startup_recorder_statuses(
+    sender: &mut SplitSink<WebSocket, Message>,
+    manager: &DeviceManager,
+) -> bool {
+    for device_id in startup_recorder_status_device_ids(manager) {
+        if !send_recorder_status(sender, manager, &device_id).await {
+            return false;
+        }
+    }
+    true
+}
+
+fn startup_recorder_status_device_ids(manager: &DeviceManager) -> Vec<String> {
+    manager
+        .device_list()
+        .iter()
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
 async fn send_recorder_status(
     sender: &mut SplitSink<WebSocket, Message>,
     manager: &DeviceManager,
@@ -493,6 +513,28 @@ mod tests {
         assert_eq!(payload["devices"][0]["deviceName"], "Mock Device");
         assert_eq!(payload["devices"][0]["connected"], true);
         assert_eq!(payload["devices"][0]["source"], "mock");
+    }
+
+    #[test]
+    fn startup_recorder_status_targets_manager_devices() {
+        let mock_manager =
+            DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+        let adb_manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![crate::adb::AdbDevice {
+                serial: "emulator-5554".to_string(),
+                display_name: "Pixel 8".to_string(),
+            }],
+        );
+
+        assert_eq!(
+            startup_recorder_status_device_ids(&mock_manager),
+            vec![MOCK_DEVICE_ID]
+        );
+        assert_eq!(
+            startup_recorder_status_device_ids(&adb_manager),
+            vec!["emulator-5554".to_string()]
+        );
     }
 
     #[test]
