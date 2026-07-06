@@ -8,8 +8,14 @@ pub struct RingBuffer<T> {
 
 impl<T: Clone> RingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
-        assert!(capacity > 0, "ring buffer capacity must be greater than zero");
-        Self { capacity, values: VecDeque::with_capacity(capacity) }
+        assert!(
+            capacity > 0,
+            "ring buffer capacity must be greater than zero"
+        );
+        Self {
+            capacity,
+            values: VecDeque::new(),
+        }
     }
 
     pub fn push(&mut self, value: T) {
@@ -32,6 +38,13 @@ impl<T: Clone> RingBuffer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_does_not_eagerly_allocate_storage() {
+        let buffer: RingBuffer<u8> = RingBuffer::new(1_000_000);
+
+        assert_eq!(buffer.values.capacity(), 0);
+    }
 
     #[test]
     fn keeps_latest_values_when_full() {

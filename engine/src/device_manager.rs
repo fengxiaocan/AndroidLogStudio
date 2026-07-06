@@ -39,9 +39,13 @@ pub struct DeviceManager {
 #[allow(dead_code)]
 impl DeviceManager {
     pub fn mock_fallback(message: impl Into<String>) -> Self {
+        Self::mock_fallback_with_log_root(message, PathBuf::from("logs"))
+    }
+
+    fn mock_fallback_with_log_root(message: impl Into<String>, log_root: PathBuf) -> Self {
         let recorder = Recorder::new(RecorderConfig {
             enabled: true,
-            root: PathBuf::from("logs"),
+            root: log_root,
             device_name: MOCK_DEVICE_ID.to_string(),
         });
         let context = DeviceContext::new(
@@ -71,6 +75,14 @@ impl DeviceManager {
     }
 
     pub fn from_adb_devices(path: String, adb_devices: Vec<AdbDevice>) -> Self {
+        Self::from_adb_devices_with_log_root(path, adb_devices, PathBuf::from("logs"))
+    }
+
+    fn from_adb_devices_with_log_root(
+        path: String,
+        adb_devices: Vec<AdbDevice>,
+        log_root: PathBuf,
+    ) -> Self {
         let count = adb_devices.len();
         let mut contexts = HashMap::new();
         let devices = adb_devices
@@ -80,7 +92,7 @@ impl DeviceManager {
                 let device_name = device.display_name;
                 let recorder = Recorder::new(RecorderConfig {
                     enabled: true,
-                    root: PathBuf::from("logs"),
+                    root: log_root.clone(),
                     device_name: device_id.clone(),
                 });
                 let context =
@@ -159,6 +171,7 @@ impl DeviceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn builds_mock_fallback_when_adb_is_missing() {
@@ -197,7 +210,11 @@ mod tests {
 
     #[test]
     fn mock_manager_ingests_and_searches_logs() {
-        let mut manager = DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+        let dir = tempdir().expect("tempdir");
+        let mut manager = DeviceManager::mock_fallback_with_log_root(
+            "ADB: no online devices, using mock device",
+            dir.path().to_path_buf(),
+        );
 
         manager.ingest_mock_line("07-04 12:34:56.789  1234  5678 I ActivityManager: Mock log line");
         manager
