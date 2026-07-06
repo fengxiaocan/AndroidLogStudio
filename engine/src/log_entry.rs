@@ -31,12 +31,20 @@ pub struct LogEntry {
     pub bookmarked: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceSource {
+    Adb,
+    Mock,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub device_id: String,
     pub device_name: String,
     pub connected: bool,
+    pub source: DeviceSource,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

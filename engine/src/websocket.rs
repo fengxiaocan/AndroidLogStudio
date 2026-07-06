@@ -1,6 +1,6 @@
 use crate::device::DeviceContext;
 use crate::filter::FilterQuery;
-use crate::log_entry::{DeviceInfo, LogEntry, StatisticsSnapshot};
+use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry, StatisticsSnapshot};
 use crate::recorder::{Recorder, RecorderConfig, RecorderStatus};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -40,15 +40,33 @@ struct WsQuery {
     rename_all_fields = "camelCase"
 )]
 pub enum ClientMessage {
-    ConnectDevice { device_id: String },
-    DisconnectDevice { device_id: String },
-    SetFilter { device_id: String, query: String },
+    ConnectDevice {
+        device_id: String,
+    },
+    DisconnectDevice {
+        device_id: String,
+    },
+    SetFilter {
+        device_id: String,
+        query: String,
+    },
     SetSearch {
         device_id: String,
         query: String,
         options: serde_json::Value,
     },
-    GetStatistics { device_id: String },
+    GetStatistics {
+        device_id: String,
+    },
+    RefreshDevices,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdbStatusMode {
+    Bundled,
+    MockFallback,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +100,13 @@ pub enum ServerMessage {
         enabled: bool,
         path: Option<String>,
         warning: Option<String>,
+    },
+    #[allow(dead_code)]
+    AdbStatus {
+        available: bool,
+        mode: AdbStatusMode,
+        path: Option<String>,
+        message: String,
     },
     Error {
         message: String,
@@ -208,6 +233,9 @@ async fn handle_client_text(
             }
             send_statistics(sender, device).await
         }
+        Ok(ClientMessage::RefreshDevices) => {
+            send_server_message(sender, &device_list_message(device)).await
+        }
         Ok(
             ClientMessage::ConnectDevice { device_id }
             | ClientMessage::DisconnectDevice { device_id },
@@ -320,6 +348,7 @@ fn device_list_message(device: &DeviceContext) -> ServerMessage {
             device_id: device.device_id.clone(),
             device_name: device.device_name.clone(),
             connected: true,
+            source: DeviceSource::Mock,
         }],
     }
 }
@@ -404,6 +433,33 @@ mod tests {
         assert!(
             matches!(message, ClientMessage::SetSearch { device_id, query, options } if device_id == MOCK_DEVICE_ID && query == "mock" && options["caseSensitive"] == false)
         );
+    }
+
+    #[test]
+    fn refresh_devices_message_deserializes() {
+        let message = serde_json::from_value::<ClientMessage>(json!({
+            "type": "refresh_devices"
+        }))
+        .expect("refresh_devices should deserialize");
+
+        assert!(matches!(message, ClientMessage::RefreshDevices));
+    }
+
+    #[test]
+    fn adb_status_message_uses_camel_case_fields() {
+        let payload = serde_json::to_value(ServerMessage::AdbStatus {
+            available: true,
+            mode: AdbStatusMode::Bundled,
+            path: Some("libs/linux/adb".to_string()),
+            message: "ADB: using bundled libs/linux/adb".to_string(),
+        })
+        .expect("adb_status serializes");
+
+        assert_eq!(payload["type"], "adb_status");
+        assert_eq!(payload["available"], true);
+        assert_eq!(payload["mode"], "bundled");
+        assert_eq!(payload["path"], "libs/linux/adb");
+        assert_eq!(payload["message"], "ADB: using bundled libs/linux/adb");
     }
 
     #[test]

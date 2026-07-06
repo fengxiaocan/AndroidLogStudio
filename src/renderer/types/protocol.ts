@@ -1,5 +1,7 @@
 export type LogLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error' | 'assert' | 'unknown';
 
+export type DeviceSource = 'adb' | 'mock';
+
 export interface LogEntry {
   seq: number;
   timestamp: number;
@@ -21,6 +23,14 @@ export interface DeviceInfo {
   deviceId: string;
   deviceName: string;
   connected: boolean;
+  source: DeviceSource;
+}
+
+export interface AdbStatus {
+  available: boolean;
+  mode: 'bundled' | 'mock_fallback';
+  path: string | null;
+  message: string;
 }
 
 export interface StatisticsSnapshot {
@@ -39,7 +49,8 @@ export type ClientMessage =
   | { type: 'get_history'; deviceId: string; beforeSeq: number; limit: number }
   | { type: 'add_bookmark'; deviceId: string; seq: number }
   | { type: 'remove_bookmark'; deviceId: string; seq: number }
-  | { type: 'get_statistics'; deviceId: string };
+  | { type: 'get_statistics'; deviceId: string }
+  | { type: 'refresh_devices' };
 
 export interface SearchOptions {
   regex: boolean;
@@ -54,6 +65,7 @@ export type ServerMessage =
   | { type: 'statistics'; deviceId: string; stats: StatisticsSnapshot }
   | { type: 'search_results'; deviceId: string; matches: number[] }
   | { type: 'recorder_status'; deviceId: string; enabled: boolean; path: string | null; warning: string | null }
+  | { type: 'adb_status'; available: boolean; mode: 'bundled' | 'mock_fallback'; path: string | null; message: string }
   | { type: 'error'; message: string };
 
 declare global {
