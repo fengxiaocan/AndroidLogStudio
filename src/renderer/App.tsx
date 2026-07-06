@@ -16,6 +16,7 @@ export function App() {
   const filterQuery = useAppStore((state) => state.filterQuery);
   const searchQuery = useAppStore((state) => state.searchQuery);
   const stats = useAppStore((state) => state.stats);
+  const adbStatus = useAppStore((state) => state.adbStatus);
   const recorderPath = useAppStore((state) => state.recorderPath);
   const recorderWarning = useAppStore((state) => state.recorderWarning);
   const setFilterQuery = useAppStore((state) => state.setFilterQuery);
@@ -61,6 +62,10 @@ export function App() {
     [activeDeviceId, setSearchQuery],
   );
 
+  const handleRefreshDevices = useCallback(() => {
+    clientRef.current?.send({ type: 'refresh_devices' });
+  }, []);
+
   return (
     <main className="app-shell">
       <header className="toolbar">
@@ -70,6 +75,9 @@ export function App() {
       <DeviceTabs devices={devices} activeDeviceId={activeDeviceId} />
       <section className="query-region" aria-label="Query controls">
         <QueryBar value={filterQuery} onChange={handleFilterChange} />
+        <button className="refresh-devices" type="button" onClick={handleRefreshDevices}>
+          Refresh Devices
+        </button>
       </section>
       <section className="content-grid" aria-label="Log workbench">
         <LogView logs={logs} searchQuery={searchQuery} />
@@ -77,6 +85,7 @@ export function App() {
       </section>
       <StatusBar
         connected={connected}
+        adbStatus={adbStatus}
         recorderPath={recorderPath}
         visibleLogCount={logs.length}
         warning={recorderWarning}

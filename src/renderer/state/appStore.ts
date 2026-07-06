@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DeviceInfo, LogEntry, ServerMessage, StatisticsSnapshot } from '../types/protocol';
+import type { AdbStatus, DeviceInfo, LogEntry, ServerMessage, StatisticsSnapshot } from '../types/protocol';
 
 export const DEFAULT_VISIBLE_LIMIT = 500;
 export const MAX_VISIBLE_LIMIT = 5000;
@@ -22,6 +22,7 @@ interface AppState {
   searchMatches: number[];
   stats: StatisticsSnapshot;
   connected: boolean;
+  adbStatus: AdbStatus | null;
   recorderPath: string | null;
   recorderWarning: string | null;
   setFilterQuery: (filterQuery: string) => void;
@@ -56,6 +57,7 @@ export const useAppStore = create<AppState>((set) => ({
   searchMatches: [],
   stats: emptyStats,
   connected: false,
+  adbStatus: null,
   recorderPath: null,
   recorderWarning: null,
   setFilterQuery: (filterQuery) => set({ filterQuery }),
@@ -105,6 +107,9 @@ export const useAppStore = create<AppState>((set) => ({
             ? { recorderPath: message.path, recorderWarning: message.warning }
             : {},
         );
+        break;
+      case 'adb_status':
+        set({ adbStatus: message });
         break;
       case 'error':
         break;
