@@ -29,6 +29,23 @@ interface AppState {
   handleServerMessage: (message: ServerMessage) => void;
 }
 
+function nextActiveDeviceId(activeDeviceId: string | null, devices: DeviceInfo[]): string | null {
+  if (activeDeviceId && devices.some((device) => device.deviceId === activeDeviceId)) {
+    return activeDeviceId;
+  }
+  return devices[0]?.deviceId ?? null;
+}
+
+function emptyActiveDeviceState() {
+  return {
+    logs: [],
+    searchMatches: [],
+    stats: emptyStats,
+    recorderPath: null,
+    recorderWarning: null,
+  };
+}
+
 export const useAppStore = create<AppState>((set) => ({
   devices: [],
   activeDeviceId: null,
@@ -46,32 +63,48 @@ export const useAppStore = create<AppState>((set) => ({
   handleServerMessage: (message) => {
     switch (message.type) {
       case 'device_list':
-        set({
-          devices: message.devices,
-          activeDeviceId: message.devices[0]?.deviceId ?? null,
-          connected: true,
+        set((state) => {
+          const activeDeviceId = nextActiveDeviceId(state.activeDeviceId, message.devices);
+          return {
+            devices: message.devices,
+            activeDeviceId,
+            connected: true,
+            ...(activeDeviceId === state.activeDeviceId ? {} : emptyActiveDeviceState()),
+          };
         });
         break;
       case 'new_logs':
         set((state) => {
+          if (message.deviceId !== state.activeDeviceId) {
+            return {};
+          }
           const limit = Math.min(state.visibleLimit, MAX_VISIBLE_LIMIT);
           return { logs: [...state.logs, ...message.logs].slice(-limit) };
         });
         break;
       case 'log_snapshot':
         set((state) => {
+          if (message.deviceId !== state.activeDeviceId) {
+            return {};
+          }
           const limit = Math.min(state.visibleLimit, MAX_VISIBLE_LIMIT);
           return { logs: message.logs.slice(-limit) };
         });
         break;
       case 'statistics':
-        set({ stats: message.stats });
+        set((state) => (message.deviceId === state.activeDeviceId ? { stats: message.stats } : {}));
         break;
       case 'search_results':
-        set({ searchMatches: message.matches });
+        set((state) =>
+          message.deviceId === state.activeDeviceId ? { searchMatches: message.matches } : {},
+        );
         break;
       case 'recorder_status':
-        set({ recorderPath: message.path, recorderWarning: message.warning });
+        set((state) =>
+          message.deviceId === state.activeDeviceId
+            ? { recorderPath: message.path, recorderWarning: message.warning }
+            : {},
+        );
         break;
       case 'error':
         break;
