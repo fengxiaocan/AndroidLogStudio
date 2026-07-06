@@ -54,6 +54,7 @@ beforeEach(() => {
     searchMatches: [],
     stats: emptyStats,
     connected: false,
+    adbStatus: null,
     recorderPath: null,
     recorderWarning: null,
   });

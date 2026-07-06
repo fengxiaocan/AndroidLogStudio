@@ -9,12 +9,16 @@ interface StatusBarProps {
 }
 
 export function StatusBar({ connected, adbStatus, recorderPath, visibleLogCount, warning }: StatusBarProps) {
+  const adbMessage = adbStatus?.message ?? 'ADB: pending';
+
   return (
     <footer className="status-bar">
       <span className={connected ? 'status status--connected' : 'status status--disconnected'}>
         {connected ? 'connected' : 'disconnected'}
       </span>
-      <span>{adbStatus?.message ?? 'ADB: pending'}</span>
+      <span className="status-bar__adb" role="status" aria-live="polite" title={adbMessage}>
+        {adbMessage}
+      </span>
       <span>Recorder: {recorderPath ?? 'pending'}</span>
       <span>{visibleLogCount} visible logs</span>
       {warning ? <strong>{warning}</strong> : null}

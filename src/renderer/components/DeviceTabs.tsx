@@ -22,7 +22,7 @@ export function DeviceTabs({ devices, activeDeviceId }: DeviceTabsProps) {
             >
               <span className="device-tab__name">{device.deviceName}</span>
               <span className="device-tab__id">{device.deviceId}</span>
-              <span className="device-tab__source">{device.source}</span>
+              <span className="device-tab__source">Source: {device.source.toUpperCase()}</span>
             </button>
           );
         })

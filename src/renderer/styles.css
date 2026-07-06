@@ -119,9 +119,14 @@ input {
   cursor: pointer;
 }
 
-.refresh-devices:hover,
+.refresh-devices:hover:not(:disabled),
 .refresh-devices:focus-visible {
   border-color: #7ee787;
+}
+
+.refresh-devices:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .field {
@@ -273,11 +278,25 @@ mark {
   gap: 18px;
   align-items: center;
   min-width: 0;
+  overflow: hidden;
   padding: 0 16px;
   border-top: 1px solid #263140;
   background: #151a21;
   color: #8b949e;
   font-size: 12px;
+}
+
+.status-bar > span,
+.status-bar > strong {
+  flex: 0 0 auto;
+}
+
+.status-bar > .status-bar__adb {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
 }
 
 .status {

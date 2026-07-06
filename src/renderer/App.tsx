@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { EngineClient } from './api/engineClient';
 import { DeviceTabs } from './components/DeviceTabs';
 import { LogView } from './components/LogView';
@@ -24,6 +24,8 @@ export function App() {
   const handleServerMessage = useAppStore((state) => state.handleServerMessage);
   const clientRef = useRef<EngineClient | null>(null);
   const hasConnectedRef = useRef(false);
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
+  const statusWarning = [recorderWarning, refreshWarning].filter(Boolean).join(' · ') || null;
 
   useEffect(() => {
     if (hasConnectedRef.current) {
@@ -63,7 +65,8 @@ export function App() {
   );
 
   const handleRefreshDevices = useCallback(() => {
-    clientRef.current?.send({ type: 'refresh_devices' });
+    const sent = clientRef.current?.send({ type: 'refresh_devices' }) ?? false;
+    setRefreshWarning(sent ? null : 'Unable to refresh devices while disconnected');
   }, []);
 
   return (
@@ -75,7 +78,12 @@ export function App() {
       <DeviceTabs devices={devices} activeDeviceId={activeDeviceId} />
       <section className="query-region" aria-label="Query controls">
         <QueryBar value={filterQuery} onChange={handleFilterChange} />
-        <button className="refresh-devices" type="button" onClick={handleRefreshDevices}>
+        <button
+          className="refresh-devices"
+          type="button"
+          onClick={handleRefreshDevices}
+          disabled={!connected}
+        >
           Refresh Devices
         </button>
       </section>
@@ -88,7 +96,7 @@ export function App() {
         adbStatus={adbStatus}
         recorderPath={recorderPath}
         visibleLogCount={logs.length}
-        warning={recorderWarning}
+        warning={statusWarning}
       />
     </main>
   );
