@@ -105,6 +105,46 @@ impl DeviceManager {
         )
     }
 
+    pub fn replace_with_scan_result(
+        &mut self,
+        path: Option<String>,
+        devices: Vec<AdbDevice>,
+        error: Option<String>,
+    ) {
+        self.stop_logcat_children();
+        *self = Self::from_scan_result(path, devices, error);
+    }
+
+    pub async fn refresh(&mut self, project_root: &std::path::Path) {
+        self.stop_logcat_children();
+
+        let adb_path = resolve_adb_path(project_root).adb;
+        let adb_path_string = adb_path.display().to_string();
+        if !adb_path.exists() {
+            self.switch_to_mock_fallback(format!(
+                "ADB: missing {adb_path_string}, using mock device"
+            ));
+            return;
+        }
+
+        match list_devices(&adb_path).await {
+            Ok(devices) => {
+                let has_adb_devices = !devices.is_empty();
+                self.replace_with_scan_result(Some(adb_path_string), devices, None);
+                if has_adb_devices {
+                    self.start_logcat_processes(&adb_path).await;
+                }
+            }
+            Err(error) => {
+                self.replace_with_scan_result(
+                    Some(adb_path_string),
+                    Vec::new(),
+                    Some(error.to_string()),
+                );
+            }
+        }
+    }
+
     pub async fn start(project_root: &std::path::Path) -> Self {
         let adb_path = resolve_adb_path(project_root).adb;
         let adb_path_string = adb_path.display().to_string();
@@ -341,6 +381,29 @@ mod tests {
 
         assert_eq!(manager.adb_status().available, false);
         assert!(manager.adb_status().message.contains("permission denied"));
+    }
+
+    #[test]
+    fn refresh_replaces_device_state() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "old".to_string(),
+                display_name: "Old".to_string(),
+            }],
+        );
+
+        manager.replace_with_scan_result(
+            Some("libs/linux/adb".to_string()),
+            vec![AdbDevice {
+                serial: "new".to_string(),
+                display_name: "New".to_string(),
+            }],
+            None,
+        );
+
+        assert_eq!(manager.device_list().len(), 1);
+        assert_eq!(manager.device_list()[0].device_id, "new");
     }
 
     #[test]

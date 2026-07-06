@@ -220,8 +220,11 @@ async fn handle_client_text(
             send_statistics(sender, manager, &device_id).await
         }
         Ok(ClientMessage::RefreshDevices) => {
-            send_server_message(sender, &device_list_message(manager)).await
-                && send_adb_status(sender, manager.adb_status()).await
+            let project_root =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            manager.refresh(&project_root).await;
+            send_adb_status(sender, manager.adb_status()).await
+                && send_server_message(sender, &device_list_message(manager)).await
         }
         Ok(
             ClientMessage::ConnectDevice { device_id }
