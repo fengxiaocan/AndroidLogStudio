@@ -116,27 +116,28 @@ impl DeviceManager {
     }
 
     pub async fn refresh(&mut self, project_root: &std::path::Path) {
-        self.stop_logcat_children();
+        self.stop_logcat_children_async().await;
 
         let adb_path = resolve_adb_path(project_root).adb;
         let adb_path_string = adb_path.display().to_string();
         if !adb_path.exists() {
-            self.switch_to_mock_fallback(format!(
+            self.switch_to_mock_fallback_async(format!(
                 "ADB: missing {adb_path_string}, using mock device"
-            ));
+            ))
+            .await;
             return;
         }
 
         match list_devices(&adb_path).await {
             Ok(devices) => {
                 let has_adb_devices = !devices.is_empty();
-                self.replace_with_scan_result(Some(adb_path_string), devices, None);
+                *self = Self::from_scan_result(Some(adb_path_string), devices, None);
                 if has_adb_devices {
                     self.start_logcat_processes(&adb_path).await;
                 }
             }
             Err(error) => {
-                self.replace_with_scan_result(
+                *self = Self::from_scan_result(
                     Some(adb_path_string),
                     Vec::new(),
                     Some(error.to_string()),
@@ -198,9 +199,10 @@ impl DeviceManager {
                     self.logcat_children.insert(device_id, child);
                 }
                 Err(error) => {
-                    self.switch_to_mock_fallback(format!(
+                    self.switch_to_mock_fallback_async(format!(
                         "ADB: failed to start logcat: {error}, using mock device"
-                    ));
+                    ))
+                    .await;
                     return;
                 }
             }
@@ -212,11 +214,24 @@ impl DeviceManager {
         *self = Self::mock_fallback(message);
     }
 
+    async fn switch_to_mock_fallback_async(&mut self, message: impl Into<String>) {
+        self.stop_logcat_children_async().await;
+        *self = Self::mock_fallback(message);
+    }
+
     fn stop_logcat_children(&mut self) {
         for child in self.logcat_children.values_mut() {
             let _ = child.start_kill();
         }
         self.logcat_children.clear();
+    }
+
+    async fn stop_logcat_children_async(&mut self) {
+        let children = std::mem::take(&mut self.logcat_children);
+        for (_, mut child) in children {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
     }
 
     fn from_adb_devices_with_log_root(
@@ -381,6 +396,32 @@ mod tests {
 
         assert_eq!(manager.adb_status().available, false);
         assert!(manager.adb_status().message.contains("permission denied"));
+    }
+
+    #[tokio::test]
+    async fn async_stop_logcat_children_waits_for_process_exit() {
+        let mut manager = DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+        let child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep should spawn");
+        let pid = child.id().expect("child should have pid");
+        manager
+            .logcat_children
+            .insert(MOCK_DEVICE_ID.to_string(), child);
+
+        manager.stop_logcat_children_async().await;
+
+        assert!(manager.logcat_children.is_empty());
+        let status = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill -0 should run");
+        assert!(!status.success(), "child process should be reaped");
     }
 
     #[test]

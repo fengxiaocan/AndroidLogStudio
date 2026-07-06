@@ -225,6 +225,7 @@ async fn handle_client_text(
             manager.refresh(&project_root).await;
             send_adb_status(sender, manager.adb_status()).await
                 && send_server_message(sender, &device_list_message(manager)).await
+                && send_refresh_device_state(sender, manager).await
         }
         Ok(
             ClientMessage::ConnectDevice { device_id }
@@ -421,6 +422,51 @@ fn startup_recorder_status_device_ids(manager: &DeviceManager) -> Vec<String> {
         .collect()
 }
 
+async fn send_refresh_device_state(
+    sender: &mut SplitSink<WebSocket, Message>,
+    manager: &DeviceManager,
+) -> bool {
+    for device_id in refresh_device_state_device_ids(manager) {
+        let messages = match refresh_device_state_messages(manager, &device_id) {
+            Ok(messages) => messages,
+            Err(error) => return send_error(sender, error.to_string()).await,
+        };
+
+        for message in messages {
+            if !send_server_message(sender, &message).await {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn refresh_device_state_device_ids(manager: &DeviceManager) -> Vec<String> {
+    manager
+        .device_list()
+        .iter()
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
+fn refresh_device_state_messages(
+    manager: &DeviceManager,
+    device_id: &str,
+) -> anyhow::Result<Vec<ServerMessage>> {
+    let snapshot = manager.latest_visible_snapshot(device_id, SNAPSHOT_LIMIT)?;
+    Ok(vec![
+        recorder_status_message(device_id, snapshot.recorder_status),
+        ServerMessage::LogSnapshot {
+            device_id: device_id.to_string(),
+            logs: snapshot.logs,
+        },
+        ServerMessage::Statistics {
+            device_id: device_id.to_string(),
+            stats: snapshot.stats,
+        },
+    ])
+}
+
 async fn send_recorder_status(
     sender: &mut SplitSink<WebSocket, Message>,
     manager: &DeviceManager,
@@ -580,6 +626,56 @@ mod tests {
             startup_recorder_status_device_ids(&adb_manager),
             vec!["emulator-5554".to_string()]
         );
+    }
+
+    #[test]
+    fn refresh_device_state_targets_manager_devices() {
+        let mock_manager =
+            DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+        let adb_manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![crate::adb::AdbDevice {
+                serial: "emulator-5554".to_string(),
+                display_name: "Pixel 8".to_string(),
+            }],
+        );
+
+        assert_eq!(
+            refresh_device_state_device_ids(&mock_manager),
+            vec![MOCK_DEVICE_ID]
+        );
+        assert_eq!(
+            refresh_device_state_device_ids(&adb_manager),
+            vec!["emulator-5554".to_string()]
+        );
+    }
+
+    #[test]
+    fn refresh_device_state_messages_reset_visible_device_state() {
+        let manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![crate::adb::AdbDevice {
+                serial: "emulator-5554".to_string(),
+                display_name: "Pixel 8".to_string(),
+            }],
+        );
+
+        let messages = refresh_device_state_messages(&manager, "emulator-5554")
+            .expect("refresh state messages");
+
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(
+            &messages[0],
+            ServerMessage::RecorderStatus { device_id, .. } if device_id == "emulator-5554"
+        ));
+        assert!(matches!(
+            &messages[1],
+            ServerMessage::LogSnapshot { device_id, logs } if device_id == "emulator-5554" && logs.is_empty()
+        ));
+        assert!(matches!(
+            &messages[2],
+            ServerMessage::Statistics { device_id, .. } if device_id == "emulator-5554"
+        ));
     }
 
     #[test]
