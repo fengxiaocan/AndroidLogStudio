@@ -1,6 +1,11 @@
 use crate::adb::AdbDevice;
+use crate::device::{DeviceContext, DeviceSnapshot};
+use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, DeviceSource};
+use crate::recorder::{Recorder, RecorderConfig};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[allow(dead_code)]
 pub const MOCK_DEVICE_ID: &str = "mock-device";
@@ -28,11 +33,26 @@ pub struct AdbStatus {
 pub struct DeviceManager {
     adb_status: AdbStatus,
     devices: Vec<DeviceInfo>,
+    contexts: HashMap<String, DeviceContext>,
 }
 
 #[allow(dead_code)]
 impl DeviceManager {
     pub fn mock_fallback(message: impl Into<String>) -> Self {
+        let recorder = Recorder::new(RecorderConfig {
+            enabled: true,
+            root: PathBuf::from("logs"),
+            device_name: MOCK_DEVICE_ID.to_string(),
+        });
+        let context = DeviceContext::new(
+            MOCK_DEVICE_ID.to_string(),
+            MOCK_DEVICE_NAME.to_string(),
+            1_000_000,
+            recorder,
+        );
+        let mut contexts = HashMap::new();
+        contexts.insert(MOCK_DEVICE_ID.to_string(), context);
+
         Self {
             adb_status: AdbStatus {
                 available: false,
@@ -46,11 +66,36 @@ impl DeviceManager {
                 connected: true,
                 source: DeviceSource::Mock,
             }],
+            contexts,
         }
     }
 
     pub fn from_adb_devices(path: String, adb_devices: Vec<AdbDevice>) -> Self {
         let count = adb_devices.len();
+        let mut contexts = HashMap::new();
+        let devices = adb_devices
+            .into_iter()
+            .map(|device| {
+                let device_id = device.serial;
+                let device_name = device.display_name;
+                let recorder = Recorder::new(RecorderConfig {
+                    enabled: true,
+                    root: PathBuf::from("logs"),
+                    device_name: device_id.clone(),
+                });
+                let context =
+                    DeviceContext::new(device_id.clone(), device_name.clone(), 1_000_000, recorder);
+                contexts.insert(device_id.clone(), context);
+
+                DeviceInfo {
+                    device_id,
+                    device_name,
+                    connected: true,
+                    source: DeviceSource::Adb,
+                }
+            })
+            .collect();
+
         Self {
             adb_status: AdbStatus {
                 available: true,
@@ -58,15 +103,8 @@ impl DeviceManager {
                 path: Some(path),
                 message: format!("ADB: {count} device(s) connected"),
             },
-            devices: adb_devices
-                .into_iter()
-                .map(|device| DeviceInfo {
-                    device_id: device.serial,
-                    device_name: device.display_name,
-                    connected: true,
-                    source: DeviceSource::Adb,
-                })
-                .collect(),
+            devices,
+            contexts,
         }
     }
 
@@ -76,6 +114,45 @@ impl DeviceManager {
 
     pub fn device_list(&self) -> &[DeviceInfo] {
         &self.devices
+    }
+
+    pub fn ingest_mock_line(&mut self, raw_line: &str) {
+        if let Some(context) = self.contexts.get_mut(MOCK_DEVICE_ID) {
+            let _ = context.ingest_line(raw_line);
+        }
+    }
+
+    pub fn set_filter(&mut self, device_id: &str, query: &str) -> anyhow::Result<()> {
+        let context = self
+            .contexts
+            .get_mut(device_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown device: {device_id}"))?;
+        context.set_filter(FilterQuery::parse(query));
+        Ok(())
+    }
+
+    pub fn latest_visible_snapshot(
+        &self,
+        device_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<DeviceSnapshot> {
+        let context = self
+            .contexts
+            .get(device_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown device: {device_id}"))?;
+        Ok(context.latest_visible_snapshot(limit))
+    }
+
+    pub fn search_visible_sequences(
+        &self,
+        device_id: &str,
+        query: &str,
+    ) -> anyhow::Result<Vec<u64>> {
+        let context = self
+            .contexts
+            .get(device_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown device: {device_id}"))?;
+        Ok(context.search_visible_sequences(query))
     }
 }
 
@@ -116,5 +193,36 @@ mod tests {
         assert_eq!(manager.device_list().len(), 2);
         assert_eq!(manager.device_list()[0].source, DeviceSource::Adb);
         assert_eq!(manager.device_list()[1].device_name, "Galaxy S23");
+    }
+
+    #[test]
+    fn mock_manager_ingests_and_searches_logs() {
+        let mut manager = DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+
+        manager.ingest_mock_line("07-04 12:34:56.789  1234  5678 I ActivityManager: Mock log line");
+        manager
+            .set_filter(MOCK_DEVICE_ID, "ActivityManager")
+            .expect("filter should apply");
+
+        let snapshot = manager
+            .latest_visible_snapshot(MOCK_DEVICE_ID, 500)
+            .expect("snapshot");
+        assert_eq!(snapshot.logs.len(), 1);
+        assert_eq!(
+            manager
+                .search_visible_sequences(MOCK_DEVICE_ID, "Mock")
+                .expect("search"),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn unknown_device_returns_error() {
+        let mut manager = DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+
+        let error = manager
+            .set_filter("missing", "level:error")
+            .expect_err("unknown device should error");
+        assert!(error.to_string().contains("unknown device: missing"));
     }
 }
