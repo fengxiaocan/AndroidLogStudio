@@ -1,4 +1,5 @@
 use crate::device::DeviceContext;
+use crate::device_manager::AdbStatusMode;
 use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry, StatisticsSnapshot};
 use crate::recorder::{Recorder, RecorderConfig, RecorderStatus};
@@ -59,14 +60,6 @@ pub enum ClientMessage {
         device_id: String,
     },
     RefreshDevices,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdbStatusMode {
-    Bundled,
-    MockFallback,
 }
 
 #[derive(Debug, Serialize)]
