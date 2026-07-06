@@ -1,4 +1,4 @@
-use crate::adb::AdbDevice;
+use crate::adb::{list_devices, logcat_command, resolve_adb_path, AdbDevice};
 use crate::device::{DeviceContext, DeviceSnapshot};
 use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry};
@@ -6,6 +6,10 @@ use crate::recorder::{Recorder, RecorderConfig};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Child;
+use tokio::sync::mpsc;
 
 #[allow(dead_code)]
 pub const MOCK_DEVICE_ID: &str = "mock-device";
@@ -34,6 +38,8 @@ pub struct DeviceManager {
     adb_status: AdbStatus,
     devices: Vec<DeviceInfo>,
     contexts: HashMap<String, DeviceContext>,
+    logcat_children: HashMap<String, Child>,
+    log_receiver: Option<mpsc::UnboundedReceiver<(String, String)>>,
 }
 
 #[allow(dead_code)]
@@ -71,11 +77,91 @@ impl DeviceManager {
                 source: DeviceSource::Mock,
             }],
             contexts,
+            logcat_children: HashMap::new(),
+            log_receiver: None,
         }
     }
 
     pub fn from_adb_devices(path: String, adb_devices: Vec<AdbDevice>) -> Self {
         Self::from_adb_devices_with_log_root(path, adb_devices, PathBuf::from("logs"))
+    }
+
+    pub fn from_scan_result(
+        path: Option<String>,
+        devices: Vec<AdbDevice>,
+        error: Option<String>,
+    ) -> Self {
+        if let Some(error) = error {
+            return Self::mock_fallback(format!("ADB: {error}, using mock device"));
+        }
+
+        if devices.is_empty() {
+            return Self::mock_fallback("ADB: no online devices, using mock device");
+        }
+
+        Self::from_adb_devices(
+            path.unwrap_or_else(|| "libs/<platform>/adb".to_string()),
+            devices,
+        )
+    }
+
+    pub async fn start(project_root: &std::path::Path) -> Self {
+        let adb_path = resolve_adb_path(project_root).adb;
+        let adb_path_string = adb_path.display().to_string();
+
+        if !adb_path.exists() {
+            return Self::mock_fallback(format!(
+                "ADB: missing {adb_path_string}, using mock device"
+            ));
+        }
+
+        match list_devices(&adb_path).await {
+            Ok(devices) if devices.is_empty() => {
+                Self::mock_fallback("ADB: no online devices, using mock device")
+            }
+            Ok(devices) => {
+                let mut manager = Self::from_adb_devices(adb_path_string, devices);
+                manager.start_logcat_processes(&adb_path).await;
+                manager
+            }
+            Err(error) => Self::mock_fallback(format!("ADB: {error}, using mock device")),
+        }
+    }
+
+    async fn start_logcat_processes(&mut self, adb_path: &std::path::Path) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.log_receiver = Some(receiver);
+
+        for device in self
+            .devices
+            .iter()
+            .filter(|device| device.source == DeviceSource::Adb)
+        {
+            let mut command = logcat_command(adb_path, &device.device_id);
+            command.stdout(Stdio::piped()).stderr(Stdio::null());
+
+            match command.spawn() {
+                Ok(mut child) => {
+                    if let Some(stdout) = child.stdout.take() {
+                        let serial = device.device_id.clone();
+                        let sender = sender.clone();
+                        tokio::spawn(async move {
+                            let mut lines = BufReader::new(stdout).lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                let _ = sender.send((serial.clone(), line));
+                            }
+                        });
+                    }
+                    self.logcat_children.insert(device.device_id.clone(), child);
+                }
+                Err(error) => {
+                    self.adb_status.available = false;
+                    self.adb_status.mode = AdbStatusMode::MockFallback;
+                    self.adb_status.message =
+                        format!("ADB: failed to start logcat: {error}, using mock device");
+                }
+            }
+        }
     }
 
     fn from_adb_devices_with_log_root(
@@ -117,6 +203,8 @@ impl DeviceManager {
             },
             devices,
             contexts,
+            logcat_children: HashMap::new(),
+            log_receiver: None,
         }
     }
 
@@ -133,13 +221,32 @@ impl DeviceManager {
     }
 
     pub fn is_mock_fallback(&self) -> bool {
-        self.adb_status.mode == AdbStatusMode::MockFallback && self.has_device(MOCK_DEVICE_ID)
+        self.devices
+            .iter()
+            .any(|device| device.source == DeviceSource::Mock)
     }
 
     pub fn ingest_mock_line(&mut self, raw_line: &str) -> Option<LogEntry> {
         self.contexts
             .get_mut(MOCK_DEVICE_ID)
             .and_then(|context| context.ingest_line(raw_line))
+    }
+
+    pub fn drain_pending_logs(&mut self) -> Vec<(String, LogEntry)> {
+        let mut entries = Vec::new();
+        let Some(receiver) = self.log_receiver.as_mut() else {
+            return entries;
+        };
+
+        while let Ok((device_id, line)) = receiver.try_recv() {
+            if let Some(context) = self.contexts.get_mut(&device_id) {
+                if let Some(entry) = context.ingest_line(&line) {
+                    entries.push((device_id, entry));
+                }
+            }
+        }
+
+        entries
     }
 
     pub fn set_filter(&mut self, device_id: &str, query: &str) -> anyhow::Result<()> {
@@ -176,6 +283,14 @@ impl DeviceManager {
     }
 }
 
+impl Drop for DeviceManager {
+    fn drop(&mut self) {
+        for child in self.logcat_children.values_mut() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +306,28 @@ mod tests {
         assert_eq!(manager.device_list().len(), 1);
         assert_eq!(manager.device_list()[0].device_id, MOCK_DEVICE_ID);
         assert_eq!(manager.device_list()[0].source, DeviceSource::Mock);
+    }
+
+    #[test]
+    fn no_adb_devices_uses_mock_fallback_status() {
+        let manager =
+            DeviceManager::from_scan_result(Some("libs/linux/adb".to_string()), Vec::new(), None);
+
+        assert_eq!(manager.adb_status().available, false);
+        assert_eq!(manager.device_list()[0].source, DeviceSource::Mock);
+        assert!(manager.adb_status().message.contains("no online devices"));
+    }
+
+    #[test]
+    fn adb_scan_error_uses_mock_fallback_status() {
+        let manager = DeviceManager::from_scan_result(
+            Some("libs/linux/adb".to_string()),
+            Vec::new(),
+            Some("permission denied".to_string()),
+        );
+
+        assert_eq!(manager.adb_status().available, false);
+        assert!(manager.adb_status().message.contains("permission denied"));
     }
 
     #[test]

@@ -144,7 +144,8 @@ fn is_allowed_token(candidate: Option<&str>, expected: &str) -> bool {
 
 async fn handle_socket(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
-    let mut manager = DeviceManager::mock_fallback("ADB: no online devices, using mock device");
+    let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut manager = DeviceManager::start(&project_root).await;
     let mut ticker = time::interval(Duration::from_millis(250));
 
     if !send_server_message(&mut sender, &device_list_message(&manager)).await {
@@ -160,7 +161,11 @@ async fn handle_socket(socket: WebSocket) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if !send_pending_tick(&mut sender, &mut manager).await {
+                if manager.is_mock_fallback() {
+                    if !send_mock_tick(&mut sender, &mut manager).await {
+                        break;
+                    }
+                } else if !send_pending_adb_logs(&mut sender, &mut manager).await {
                     break;
                 }
             }
@@ -248,17 +253,6 @@ async fn validate_device(
     }
 }
 
-async fn send_pending_tick(
-    sender: &mut SplitSink<WebSocket, Message>,
-    manager: &mut DeviceManager,
-) -> bool {
-    if manager.is_mock_fallback() {
-        send_mock_tick(sender, manager).await
-    } else {
-        true
-    }
-}
-
 async fn send_mock_tick(
     sender: &mut SplitSink<WebSocket, Message>,
     manager: &mut DeviceManager,
@@ -277,6 +271,31 @@ async fn send_mock_tick(
 
     send_statistics(sender, manager, MOCK_DEVICE_ID).await
         && send_recorder_status(sender, manager, MOCK_DEVICE_ID).await
+}
+
+async fn send_pending_adb_logs(
+    sender: &mut SplitSink<WebSocket, Message>,
+    manager: &mut DeviceManager,
+) -> bool {
+    for (device_id, entry) in manager.drain_pending_logs() {
+        if entry.hidden {
+            continue;
+        }
+        let message = ServerMessage::NewLogs {
+            device_id: device_id.clone(),
+            logs: vec![entry],
+        };
+        if !send_server_message(sender, &message).await {
+            return false;
+        }
+        if !send_recorder_status(sender, manager, &device_id).await {
+            return false;
+        }
+        if !send_statistics(sender, manager, &device_id).await {
+            return false;
+        }
+    }
+    true
 }
 
 async fn send_visible_snapshot(
