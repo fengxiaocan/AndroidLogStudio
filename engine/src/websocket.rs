@@ -1,8 +1,6 @@
-use crate::device::DeviceContext;
-use crate::device_manager::AdbStatusMode;
-use crate::filter::FilterQuery;
-use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry, StatisticsSnapshot};
-use crate::recorder::{Recorder, RecorderConfig, RecorderStatus};
+use crate::device_manager::{AdbStatus, AdbStatusMode, DeviceManager, MOCK_DEVICE_ID};
+use crate::log_entry::{DeviceInfo, LogEntry, StatisticsSnapshot};
+use crate::recorder::RecorderStatus;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{header::ORIGIN, HeaderMap, StatusCode};
@@ -12,15 +10,11 @@ use axum::Router;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time;
 
-const MOCK_DEVICE_ID: &str = "mock-device";
-const MOCK_DEVICE_NAME: &str = "Mock Device";
 const MOCK_LOG_LINE: &str = "07-04 12:34:56.789  1234  5678 I ActivityManager: Mock log line";
-const BUFFER_CAPACITY: usize = 1_000_000;
 const SNAPSHOT_LIMIT: usize = 5_000;
 const ALLOWED_ORIGINS: &[&str] = &["http://127.0.0.1:5173", "http://localhost:5173", "file://"];
 
@@ -150,20 +144,23 @@ fn is_allowed_token(candidate: Option<&str>, expected: &str) -> bool {
 
 async fn handle_socket(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
-    let mut device = mock_device_context();
+    let mut manager = DeviceManager::mock_fallback("ADB: no online devices, using mock device");
     let mut ticker = time::interval(Duration::from_millis(250));
 
-    if !send_server_message(&mut sender, &device_list_message(&device)).await {
+    if !send_server_message(&mut sender, &device_list_message(&manager)).await {
         return;
     }
-    if !send_recorder_status(&mut sender, &device).await {
+    if !send_adb_status(&mut sender, manager.adb_status()).await {
+        return;
+    }
+    if !send_recorder_status(&mut sender, &manager, MOCK_DEVICE_ID).await {
         return;
     }
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if !send_mock_tick(&mut sender, &mut device).await {
+                if !send_mock_tick(&mut sender, &mut manager).await {
                     break;
                 }
             }
@@ -174,17 +171,14 @@ async fn handle_socket(socket: WebSocket) {
 
                 match incoming {
                     Ok(Message::Text(text)) => {
-                        if !handle_client_text(&mut sender, &mut device, &text).await {
+                        if !handle_client_text(&mut sender, &mut manager, &text).await {
                             break;
                         }
                     }
                     Ok(Message::Close(_)) => break,
                     Ok(_) => {}
                     Err(error) => {
-                        let message = ServerMessage::Error {
-                            message: format!("websocket receive error: {error}"),
-                        };
-                        let _ = send_server_message(&mut sender, &message).await;
+                        let _ = send_error(&mut sender, format!("websocket receive error: {error}")).await;
                         break;
                     }
                 }
@@ -195,72 +189,73 @@ async fn handle_socket(socket: WebSocket) {
 
 async fn handle_client_text(
     sender: &mut SplitSink<WebSocket, Message>,
-    device: &mut DeviceContext,
+    manager: &mut DeviceManager,
     text: &str,
 ) -> bool {
     match serde_json::from_str::<ClientMessage>(text) {
         Ok(ClientMessage::SetFilter { device_id, query }) => {
-            if !ensure_mock_device(sender, &device_id).await {
+            if !apply_result(sender, manager.set_filter(&device_id, &query)).await {
                 return false;
             }
-            device.set_filter(FilterQuery::parse(&query));
-            send_visible_snapshot(sender, device).await && send_statistics(sender, device).await
+            send_visible_snapshot(sender, manager, &device_id).await
+                && send_statistics(sender, manager, &device_id).await
         }
         Ok(ClientMessage::SetSearch {
             device_id,
             query,
             options: _,
-        }) => {
-            if !ensure_mock_device(sender, &device_id).await {
-                return false;
+        }) => match manager.search_visible_sequences(&device_id, &query) {
+            Ok(matches) => {
+                let message = ServerMessage::SearchResults { device_id, matches };
+                send_server_message(sender, &message).await
             }
-            let message = ServerMessage::SearchResults {
-                device_id: MOCK_DEVICE_ID.to_string(),
-                matches: device.search_visible_sequences(&query),
-            };
-            send_server_message(sender, &message).await
-        }
+            Err(error) => send_error(sender, error.to_string()).await,
+        },
         Ok(ClientMessage::GetStatistics { device_id }) => {
-            if !ensure_mock_device(sender, &device_id).await {
-                return false;
-            }
-            send_statistics(sender, device).await
+            send_statistics(sender, manager, &device_id).await
         }
         Ok(ClientMessage::RefreshDevices) => {
-            send_server_message(sender, &device_list_message(device)).await
+            send_server_message(sender, &device_list_message(manager)).await
+                && send_adb_status(sender, manager.adb_status()).await
         }
         Ok(
             ClientMessage::ConnectDevice { device_id }
             | ClientMessage::DisconnectDevice { device_id },
-        ) => ensure_mock_device(sender, &device_id).await,
-        Err(error) => {
-            let message = ServerMessage::Error {
-                message: format!("invalid client message: {error}"),
-            };
-            send_server_message(sender, &message).await
-        }
+        ) => validate_device(sender, manager, &device_id).await,
+        Err(error) => send_error(sender, format!("invalid client message: {error}")).await,
     }
 }
 
-async fn ensure_mock_device(sender: &mut SplitSink<WebSocket, Message>, device_id: &str) -> bool {
-    if device_id == MOCK_DEVICE_ID {
-        return true;
+async fn apply_result(
+    sender: &mut SplitSink<WebSocket, Message>,
+    result: anyhow::Result<()>,
+) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => send_error(sender, error.to_string()).await,
     }
+}
 
-    let message = ServerMessage::Error {
-        message: format!("unknown device: {device_id}"),
-    };
-    send_server_message(sender, &message).await
+async fn validate_device(
+    sender: &mut SplitSink<WebSocket, Message>,
+    manager: &DeviceManager,
+    device_id: &str,
+) -> bool {
+    if manager.has_device(device_id) {
+        true
+    } else {
+        send_error(sender, format!("unknown device: {device_id}")).await
+    }
 }
 
 async fn send_mock_tick(
     sender: &mut SplitSink<WebSocket, Message>,
-    device: &mut DeviceContext,
+    manager: &mut DeviceManager,
 ) -> bool {
-    if let Some(entry) = device.ingest_line(MOCK_LOG_LINE) {
+    if let Some(entry) = manager.ingest_mock_line(MOCK_LOG_LINE) {
         if !entry.hidden {
             let message = ServerMessage::NewLogs {
-                device_id: device.device_id.clone(),
+                device_id: MOCK_DEVICE_ID.to_string(),
                 logs: vec![entry],
             };
             if !send_server_message(sender, &message).await {
@@ -269,35 +264,42 @@ async fn send_mock_tick(
         }
     }
 
-    if !send_recorder_status(sender, device).await {
-        return false;
-    }
-
-    send_statistics(sender, device).await
+    send_statistics(sender, manager, MOCK_DEVICE_ID).await
+        && send_recorder_status(sender, manager, MOCK_DEVICE_ID).await
 }
 
 async fn send_visible_snapshot(
     sender: &mut SplitSink<WebSocket, Message>,
-    device: &DeviceContext,
+    manager: &DeviceManager,
+    device_id: &str,
 ) -> bool {
-    let snapshot = device.latest_visible_snapshot(SNAPSHOT_LIMIT);
-    let message = ServerMessage::LogSnapshot {
-        device_id: device.device_id.clone(),
-        logs: snapshot.logs,
-    };
-    send_server_message(sender, &message).await
+    match manager.latest_visible_snapshot(device_id, SNAPSHOT_LIMIT) {
+        Ok(snapshot) => {
+            let message = ServerMessage::LogSnapshot {
+                device_id: device_id.to_string(),
+                logs: snapshot.logs,
+            };
+            send_server_message(sender, &message).await
+        }
+        Err(error) => send_error(sender, error.to_string()).await,
+    }
 }
 
 async fn send_statistics(
     sender: &mut SplitSink<WebSocket, Message>,
-    device: &DeviceContext,
+    manager: &DeviceManager,
+    device_id: &str,
 ) -> bool {
-    let snapshot = device.latest_visible_snapshot(SNAPSHOT_LIMIT);
-    let message = ServerMessage::Statistics {
-        device_id: device.device_id.clone(),
-        stats: snapshot.stats,
-    };
-    send_server_message(sender, &message).await
+    match manager.latest_visible_snapshot(device_id, SNAPSHOT_LIMIT) {
+        Ok(snapshot) => {
+            let message = ServerMessage::Statistics {
+                device_id: device_id.to_string(),
+                stats: snapshot.stats,
+            };
+            send_server_message(sender, &message).await
+        }
+        Err(error) => send_error(sender, error.to_string()).await,
+    }
 }
 
 async fn send_server_message(
@@ -317,13 +319,44 @@ async fn send_server_message(
     }
 }
 
+async fn send_error(
+    sender: &mut SplitSink<WebSocket, Message>,
+    message: impl Into<String>,
+) -> bool {
+    send_server_message(
+        sender,
+        &ServerMessage::Error {
+            message: message.into(),
+        },
+    )
+    .await
+}
+
+async fn send_adb_status(sender: &mut SplitSink<WebSocket, Message>, status: &AdbStatus) -> bool {
+    send_server_message(sender, &adb_status_message(status)).await
+}
+
+fn adb_status_message(status: &AdbStatus) -> ServerMessage {
+    ServerMessage::AdbStatus {
+        available: status.available,
+        mode: status.mode.clone(),
+        path: status.path.clone(),
+        message: status.message.clone(),
+    }
+}
+
 async fn send_recorder_status(
     sender: &mut SplitSink<WebSocket, Message>,
-    device: &DeviceContext,
+    manager: &DeviceManager,
+    device_id: &str,
 ) -> bool {
-    let snapshot = device.latest_visible_snapshot(SNAPSHOT_LIMIT);
-    let message = recorder_status_message(&device.device_id, snapshot.recorder_status);
-    send_server_message(sender, &message).await
+    match manager.latest_visible_snapshot(device_id, SNAPSHOT_LIMIT) {
+        Ok(snapshot) => {
+            let message = recorder_status_message(device_id, snapshot.recorder_status);
+            send_server_message(sender, &message).await
+        }
+        Err(error) => send_error(sender, error.to_string()).await,
+    }
 }
 
 fn recorder_status_message(device_id: &str, status: RecorderStatus) -> ServerMessage {
@@ -335,36 +368,17 @@ fn recorder_status_message(device_id: &str, status: RecorderStatus) -> ServerMes
     }
 }
 
-fn device_list_message(device: &DeviceContext) -> ServerMessage {
+fn device_list_message(manager: &DeviceManager) -> ServerMessage {
     ServerMessage::DeviceList {
-        devices: vec![DeviceInfo {
-            device_id: device.device_id.clone(),
-            device_name: device.device_name.clone(),
-            connected: true,
-            source: DeviceSource::Mock,
-        }],
+        devices: manager.device_list().to_vec(),
     }
-}
-
-fn mock_device_context() -> DeviceContext {
-    let recorder = Recorder::new(RecorderConfig {
-        enabled: true,
-        root: PathBuf::from("logs"),
-        device_name: MOCK_DEVICE_ID.to_string(),
-    });
-
-    DeviceContext::new(
-        MOCK_DEVICE_ID.to_string(),
-        MOCK_DEVICE_NAME.to_string(),
-        BUFFER_CAPACITY,
-        recorder,
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn origin_allowlist_accepts_dev_packaged_and_non_browser_requests() {
@@ -453,6 +467,39 @@ mod tests {
         assert_eq!(payload["mode"], "bundled");
         assert_eq!(payload["path"], "libs/linux/adb");
         assert_eq!(payload["message"], "ADB: using bundled libs/linux/adb");
+    }
+
+    #[test]
+    fn device_list_message_uses_manager_mock_fallback_device() {
+        let manager = crate::device_manager::DeviceManager::mock_fallback(
+            "ADB: no online devices, using mock device",
+        );
+        let payload =
+            serde_json::to_value(device_list_message(&manager)).expect("device_list serializes");
+
+        assert_eq!(payload["type"], "device_list");
+        assert_eq!(payload["devices"][0]["deviceId"], MOCK_DEVICE_ID);
+        assert_eq!(payload["devices"][0]["deviceName"], "Mock Device");
+        assert_eq!(payload["devices"][0]["connected"], true);
+        assert_eq!(payload["devices"][0]["source"], "mock");
+    }
+
+    #[test]
+    fn adb_status_message_uses_manager_mock_fallback_status() {
+        let manager = crate::device_manager::DeviceManager::mock_fallback(
+            "ADB: no online devices, using mock device",
+        );
+        let payload = serde_json::to_value(adb_status_message(manager.adb_status()))
+            .expect("manager adb_status serializes");
+
+        assert_eq!(payload["type"], "adb_status");
+        assert_eq!(payload["available"], false);
+        assert_eq!(payload["mode"], "mock_fallback");
+        assert!(payload["path"].is_null());
+        assert_eq!(
+            payload["message"],
+            "ADB: no online devices, using mock device"
+        );
     }
 
     #[test]

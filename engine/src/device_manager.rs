@@ -1,7 +1,7 @@
 use crate::adb::AdbDevice;
 use crate::device::{DeviceContext, DeviceSnapshot};
 use crate::filter::FilterQuery;
-use crate::log_entry::{DeviceInfo, DeviceSource};
+use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry};
 use crate::recorder::{Recorder, RecorderConfig};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -128,10 +128,14 @@ impl DeviceManager {
         &self.devices
     }
 
-    pub fn ingest_mock_line(&mut self, raw_line: &str) {
-        if let Some(context) = self.contexts.get_mut(MOCK_DEVICE_ID) {
-            let _ = context.ingest_line(raw_line);
-        }
+    pub fn has_device(&self, device_id: &str) -> bool {
+        self.contexts.contains_key(device_id)
+    }
+
+    pub fn ingest_mock_line(&mut self, raw_line: &str) -> Option<LogEntry> {
+        self.contexts
+            .get_mut(MOCK_DEVICE_ID)
+            .and_then(|context| context.ingest_line(raw_line))
     }
 
     pub fn set_filter(&mut self, device_id: &str, query: &str) -> anyhow::Result<()> {
