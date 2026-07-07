@@ -12,7 +12,9 @@
     "test:e2e": "playwright test",
     "engine:build": "cargo build -p als-engine",
     "engine:test": "cargo test -p als-engine",
-    "engine:run": "cargo run -p als-engine"
+    "engine:run": "cargo run -p als-engine",
+    "adb:layout": "node scripts/check-adb-layout.mjs --allow-missing",
+    "adb:layout:strict": "node scripts/check-adb-layout.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
