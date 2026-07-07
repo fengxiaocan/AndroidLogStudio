@@ -3,6 +3,9 @@
 - [ ] Windows app starts without Android Studio installed.
 - [x] Engine prints `ALS_ENGINE_READY port=<port>` and serves `/ws` on localhost.
 - [x] Renderer receives `device_list` and shows Mock Device in the device tab bar.
+- [x] Engine resolves bundled ADB from `libs/<platform>/adb` or `libs/<platform>/adb.exe`.
+- [x] ADB unavailable/no-device state falls back to Mock Device with a StatusBar message.
+- [ ] Real connected devices stream `adb logcat -v threadtime` into the UI. `【未验证】` Requires a connected Android device during manual verification.
 - [x] Renderer displays incoming mock log lines.
 - [x] Visible log count remains at or below 500 by default.
 - [x] Query Filter sends `set_filter` to the backend.
