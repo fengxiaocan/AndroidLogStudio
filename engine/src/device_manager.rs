@@ -340,6 +340,24 @@ impl DeviceManager {
             .unwrap_or(false)
     }
 
+    pub fn remove_device(&mut self, device_id: &str) -> anyhow::Result<()> {
+        let connected = self
+            .devices
+            .iter()
+            .find(|device| device.device_id == device_id)
+            .map(|device| device.connected);
+        match connected {
+            None => anyhow::bail!("unknown device: {device_id}"),
+            Some(true) => anyhow::bail!("device still connected: {device_id}"),
+            Some(false) => {
+                self.contexts.remove(device_id);
+                self.logcat_children.remove(device_id);
+                self.devices.retain(|device| device.device_id != device_id);
+                Ok(())
+            }
+        }
+    }
+
     pub fn is_mock_fallback(&self) -> bool {
         self.devices
             .iter()
@@ -414,6 +432,48 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn remove_device_rejects_connected_and_unknown() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "serial-a".to_string(),
+                display_name: "Phone A".to_string(),
+            }],
+        );
+        let err = manager
+            .remove_device("serial-a")
+            .expect_err("connected device cannot be removed");
+        assert!(err.to_string().contains("still connected"));
+
+        let err = manager
+            .remove_device("missing")
+            .expect_err("unknown device");
+        assert!(err.to_string().contains("unknown device"));
+    }
+
+    #[test]
+    fn remove_device_drops_disconnected_context() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![
+                AdbDevice {
+                    serial: "serial-a".to_string(),
+                    display_name: "Phone A".to_string(),
+                },
+                AdbDevice {
+                    serial: "serial-b".to_string(),
+                    display_name: "Phone B".to_string(),
+                },
+            ],
+        );
+        assert!(manager.mark_disconnected("serial-a"));
+        manager.remove_device("serial-a").expect("remove ok");
+        assert!(!manager.has_device("serial-a"));
+        assert_eq!(manager.device_list().len(), 1);
+        assert_eq!(manager.device_list()[0].device_id, "serial-b");
+    }
 
     #[test]
     fn mark_disconnected_keeps_context_and_sets_flag() {
