@@ -290,6 +290,56 @@ impl DeviceManager {
         self.contexts.contains_key(device_id)
     }
 
+    /// Soft-disconnect: stop logcat child if any, set connected=false, keep context.
+    pub fn mark_disconnected(&mut self, device_id: &str) -> bool {
+        let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|device| device.device_id == device_id)
+        else {
+            return false;
+        };
+        if !device.connected {
+            if let Some(mut child) = self.logcat_children.remove(device_id) {
+                let _ = child.start_kill();
+            }
+            return true;
+        }
+        device.connected = false;
+        if let Some(mut child) = self.logcat_children.remove(device_id) {
+            let _ = child.start_kill();
+        }
+        true
+    }
+
+    /// Poll logcat children for exit. Soft-disconnect any that have exited.
+    /// Returns true if the device list changed.
+    pub async fn poll_logcat_exits(&mut self) -> bool {
+        let mut exited = Vec::new();
+        for (device_id, child) in self.logcat_children.iter_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => exited.push(device_id.clone()),
+                Ok(None) => {}
+            }
+        }
+        let mut dirty = false;
+        for device_id in exited {
+            self.logcat_children.remove(&device_id);
+            if self.mark_disconnected(&device_id) {
+                dirty = true;
+            }
+        }
+        dirty
+    }
+
+    pub fn is_connected(&self, device_id: &str) -> bool {
+        self.devices
+            .iter()
+            .find(|device| device.device_id == device_id)
+            .map(|device| device.connected)
+            .unwrap_or(false)
+    }
+
     pub fn is_mock_fallback(&self) -> bool {
         self.devices
             .iter()
@@ -362,7 +412,68 @@ impl Drop for DeviceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn mark_disconnected_keeps_context_and_sets_flag() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "serial-a".to_string(),
+                display_name: "Phone A".to_string(),
+            }],
+        );
+        let line = "07-04 12:34:56.789  1234  5678 I Tag: keep me";
+        {
+            let ctx = manager.contexts.get_mut("serial-a").expect("context");
+            assert!(ctx.ingest_line(line).is_some());
+        }
+
+        assert!(manager.mark_disconnected("serial-a"));
+        let device = manager
+            .device_list()
+            .iter()
+            .find(|d| d.device_id == "serial-a")
+            .expect("device remains listed");
+        assert!(!device.connected);
+        assert!(manager.has_device("serial-a"));
+        let snap = manager
+            .latest_visible_snapshot("serial-a", 100)
+            .expect("snapshot still works");
+        assert_eq!(snap.logs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn poll_logcat_exits_marks_device_disconnected() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "serial-a".to_string(),
+                display_name: "Phone A".to_string(),
+            }],
+        );
+        let child = tokio::process::Command::new("true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("true should spawn");
+        manager
+            .logcat_children
+            .insert("serial-a".to_string(), child);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let dirty = manager.poll_logcat_exits().await;
+        assert!(dirty);
+        let device = manager
+            .device_list()
+            .iter()
+            .find(|d| d.device_id == "serial-a")
+            .expect("listed");
+        assert!(!device.connected);
+        assert!(!manager.logcat_children.contains_key("serial-a"));
+    }
 
     #[test]
     fn builds_mock_fallback_when_adb_is_missing() {
