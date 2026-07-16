@@ -1,4 +1,4 @@
-use crate::adb::{list_devices, logcat_command, resolve_adb_path, AdbDevice};
+use crate::adb::{list_devices, list_process_packages, logcat_command, resolve_adb_path, AdbDevice};
 use crate::device::{DeviceContext, DeviceSnapshot, ExportMode};
 use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry};
@@ -61,11 +61,18 @@ impl DeviceManager {
             root: log_root,
             device_name: MOCK_DEVICE_ID.to_string(),
         });
-        let context = DeviceContext::new(
+        let mut context = DeviceContext::new(
             MOCK_DEVICE_ID.to_string(),
             MOCK_DEVICE_NAME.to_string(),
             1_000_000,
             recorder,
+        );
+        // Seed example PID→package mappings so mock logs can show package names
+        context.refresh_pid_cache(
+            "  PID NAME\n\
+             1234 com.example.app\n\
+             5678 system_server\n\
+             9999 com.android.systemui\n",
         );
         let mut contexts = HashMap::new();
         contexts.insert(MOCK_DEVICE_ID.to_string(), context);
@@ -266,10 +273,43 @@ impl DeviceManager {
         };
     }
 
-    /// Stub to satisfy websocket after merge of pid cache work.
-    /// Full integration (per-context cache + adb ps) can be added later.
+    /// Refresh PID→package caches for connected ADB devices.
+    /// This enables package name enrichment in log entries (Android Studio style).
+    /// Called before sending pending logs.
     pub async fn refresh_pid_caches_if_needed(&mut self) {
-        // TODO
+        let Some(adb_path_str) = &self.adb_status.path else {
+            return;
+        };
+        let adb_path = std::path::Path::new(adb_path_str);
+        if !adb_path.exists() {
+            return;
+        }
+
+        // Collect current connected ADB device ids to avoid borrow issues
+        let adb_device_ids: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|d| d.source == DeviceSource::Adb && d.connected)
+            .map(|d| d.device_id.clone())
+            .collect();
+
+        for device_id in adb_device_ids {
+            if let Some(context) = self.contexts.get_mut(&device_id) {
+                if !context.pid_cache_needs_refresh() {
+                    continue;
+                }
+                match list_process_packages(adb_path, &device_id).await {
+                    Ok(ps_output) => {
+                        context.refresh_pid_cache(&ps_output);
+                    }
+                    Err(_err) => {
+                        // Non-fatal; package names may stay unknown for this refresh cycle.
+                        // Mark as refreshed anyway to avoid hammering adb on failure.
+                        // (We could add a force or backoff, but simple for now.)
+                    }
+                }
+            }
+        }
     }
 
     pub async fn refresh(&mut self, project_root: &std::path::Path) {

@@ -255,6 +255,8 @@ async fn handle_client_text(
             if !manager.has_device(&device_id) {
                 return send_error(sender, format!("unknown device: {device_id}")).await;
             }
+            // Refresh PID cache so the snapshot (and future logs) can include package names
+            manager.refresh_pid_caches_if_needed().await;
             send_visible_snapshot(sender, manager, &device_id).await
                 && send_statistics(sender, manager, &device_id).await
                 && send_recorder_status(sender, manager, &device_id).await

@@ -1,6 +1,7 @@
 use crate::filter::FilterQuery;
 use crate::log_entry::{LogEntry, StatisticsSnapshot};
 use crate::parser::parse_threadtime_line;
+use crate::pid_cache::PidCache;
 use crate::recorder::{Recorder, RecorderStatus};
 use crate::ring_buffer::RingBuffer;
 use crate::statistics::Statistics;
@@ -48,6 +49,7 @@ pub struct DeviceContext {
     statistics: Statistics,
     recorder: Recorder,
     recorder_status: RecorderStatus,
+    pid_cache: PidCache,
 }
 
 impl DeviceContext {
@@ -70,6 +72,7 @@ impl DeviceContext {
                 path: None,
                 warning: None,
             },
+            pid_cache: PidCache::default(),
         }
     }
 
@@ -90,6 +93,14 @@ impl DeviceContext {
     pub fn ingest_line(&mut self, raw_line: &str) -> Option<LogEntry> {
         self.seq += 1;
         let mut entry = parse_threadtime_line(self.seq, raw_line)?;
+
+        // Enrich package name from PID cache (if available)
+        if entry.package_name.is_none() {
+            if let Some(name) = self.pid_cache.resolve(entry.pid) {
+                entry.package_name = Some(name.to_string());
+            }
+        }
+
         entry.hidden = !self.filter.matches(&entry);
         self.statistics.observe(&entry);
         self.recorder_status =
@@ -115,6 +126,15 @@ impl DeviceContext {
             .collect::<Vec<_>>();
         logs.reverse();
 
+        // Retroactively enrich package names for the snapshot using current cache
+        for entry in &mut logs {
+            if entry.package_name.is_none() {
+                if let Some(name) = self.pid_cache.resolve(entry.pid) {
+                    entry.package_name = Some(name.to_string());
+                }
+            }
+        }
+
         DeviceSnapshot {
             logs,
             stats: self.statistics.snapshot(),
@@ -134,6 +154,16 @@ impl DeviceContext {
             .filter(|entry| !entry.hidden && entry.message.to_lowercase().contains(&query))
             .map(|entry| entry.seq)
             .collect()
+    }
+
+    /// Apply fresh `adb shell ps` output to the PID cache for package enrichment.
+    pub fn refresh_pid_cache(&mut self, ps_output: &str) {
+        self.pid_cache.apply_ps_output(ps_output);
+    }
+
+    /// Whether this device's PID cache should be refreshed from `ps` output.
+    pub fn pid_cache_needs_refresh(&self) -> bool {
+        self.pid_cache.needs_refresh()
     }
 
     pub fn export_logs(&self, mode: ExportMode, path: &Path) -> anyhow::Result<ExportResult> {
