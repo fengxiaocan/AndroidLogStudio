@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EngineClient } from './api/engineClient';
-import { DeviceTabs } from './components/DeviceTabs';
+import { DeviceSelect } from './components/DeviceSelect';
 import { LogView } from './components/LogView';
-import { QueryBar } from './components/QueryBar';
+import { composeFilterQuery, QueryBar } from './components/QueryBar';
 import { SearchBar } from './components/SearchBar';
+import { SettingsPanel } from './components/SettingsPanel';
 import { StatsPanel } from './components/StatsPanel';
 import { StatusBar } from './components/StatusBar';
 import { buildExportFileName } from './export/fileName';
-import { useAppStore } from './state/appStore';
+import { t } from './settings/i18n';
+import { useAppStore, type FilterLevel } from './state/appStore';
 import type { ExportMode, ServerMessage } from './types/protocol';
 
 type ExportReadyMessage = Extract<ServerMessage, { type: 'export_ready' }>;
@@ -17,15 +19,24 @@ export function App() {
   const devices = useAppStore((state) => state.devices);
   const activeDeviceId = useAppStore((state) => state.activeDeviceId);
   const logs = useAppStore((state) => state.logs);
-  const filterQuery = useAppStore((state) => state.filterQuery);
+  const packageFilter = useAppStore((state) => state.packageFilter);
+  const tagFilter = useAppStore((state) => state.tagFilter);
+  const selectedLevels = useAppStore((state) => state.selectedLevels);
   const searchQuery = useAppStore((state) => state.searchQuery);
   const stats = useAppStore((state) => state.stats);
+  const paused = useAppStore((state) => state.paused);
   const adbStatus = useAppStore((state) => state.adbStatus);
   const recorderPath = useAppStore((state) => state.recorderPath);
   const recorderWarning = useAppStore((state) => state.recorderWarning);
-  const setFilterQuery = useAppStore((state) => state.setFilterQuery);
+  const settings = useAppStore((state) => state.settings);
+  const setPackageFilter = useAppStore((state) => state.setPackageFilter);
+  const setTagFilter = useAppStore((state) => state.setTagFilter);
+  const toggleLevel = useAppStore((state) => state.toggleLevel);
   const setSearchQuery = useAppStore((state) => state.setSearchQuery);
   const setActiveDeviceId = useAppStore((state) => state.setActiveDeviceId);
+  const clearLogs = useAppStore((state) => state.clearLogs);
+  const togglePaused = useAppStore((state) => state.togglePaused);
+  const openSettings = useAppStore((state) => state.openSettings);
   const handleServerMessage = useAppStore((state) => state.handleServerMessage);
   const clientRef = useRef<EngineClient | null>(null);
   const hasConnectedRef = useRef(false);
@@ -40,9 +51,19 @@ export function App() {
   const [exportHint, setExportHint] = useState<string | null>(null);
   const statusWarning =
     [recorderWarning, refreshWarning, exportHint].filter(Boolean).join(' · ') || null;
+  const locale = settings.locale;
   const activeDevice = devices.find((device) => device.deviceId === activeDeviceId);
   const canRemove = Boolean(activeDevice && !activeDevice.connected);
   const canExport = Boolean(activeDeviceId && connected && !exportBusy);
+
+  const sendFilter = useCallback(
+    (pkg: string, tag: string, levels: ReadonlyArray<FilterLevel>) => {
+      if (!activeDeviceId) return;
+      const query = composeFilterQuery(pkg, tag, levels);
+      clientRef.current?.send({ type: 'set_filter', deviceId: activeDeviceId, query });
+    },
+    [activeDeviceId],
+  );
 
   const onServerMessage = useCallback(
     (message: ServerMessage) => {
@@ -76,40 +97,40 @@ export function App() {
     void clientRef.current.connect();
   }, [onServerMessage]);
 
-  // When active device changes (including engine-driven), request snapshot + re-apply filter
+  // On active device change: request snapshot + re-apply filter (export/disconnect features).
   useEffect(() => {
     if (!activeDeviceId || !connected) return;
     clientRef.current?.send({ type: 'connect_device', deviceId: activeDeviceId });
-    if (filterQuery) {
-      clientRef.current?.send({ type: 'set_filter', deviceId: activeDeviceId, query: filterQuery });
-    }
-    // intentional: not filterQuery — filter has its own handler
-  }, [activeDeviceId, connected]);
+    sendFilter(packageFilter, tagFilter, selectedLevels);
+    // intentional: not package/tag/levels — those have their own handlers
+  }, [activeDeviceId, connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDeviceChange = useCallback(
-    (deviceId: string) => {
-      setActiveDeviceId(deviceId);
-      clientRef.current?.send({ type: 'connect_device', deviceId });
+  const handlePackageChange = useCallback(
+    (next: string) => {
+      setPackageFilter(next);
+      sendFilter(next, tagFilter, selectedLevels);
     },
-    [setActiveDeviceId],
+    [sendFilter, setPackageFilter, tagFilter, selectedLevels],
   );
 
-  const handleRemoveDevice = useCallback(() => {
-    if (!activeDeviceId) return;
-    const device = devices.find((d) => d.deviceId === activeDeviceId);
-    if (!device || device.connected) return;
-    clientRef.current?.send({ type: 'remove_device', deviceId: activeDeviceId });
-  }, [activeDeviceId, devices]);
-
-  const handleFilterChange = useCallback(
+  const handleTagChange = useCallback(
     (next: string) => {
-      setFilterQuery(next);
-
-      if (activeDeviceId) {
-        clientRef.current?.send({ type: 'set_filter', deviceId: activeDeviceId, query: next });
-      }
+      setTagFilter(next);
+      sendFilter(packageFilter, next, selectedLevels);
     },
-    [activeDeviceId, setFilterQuery],
+    [sendFilter, setTagFilter, packageFilter, selectedLevels],
+  );
+
+  const handleLevelToggle = useCallback(
+    (level: FilterLevel) => {
+      const has = selectedLevels.includes(level);
+      const nextLevels = has
+        ? selectedLevels.filter((item) => item !== level)
+        : [...selectedLevels, level];
+      toggleLevel(level);
+      sendFilter(packageFilter, tagFilter, nextLevels);
+    },
+    [sendFilter, toggleLevel, packageFilter, tagFilter, selectedLevels],
   );
 
   const handleSearchChange = useCallback(
@@ -132,6 +153,21 @@ export function App() {
     const sent = clientRef.current?.send({ type: 'refresh_devices' }) ?? false;
     setRefreshWarning(sent ? null : 'Unable to refresh devices while disconnected');
   }, []);
+
+  const handleDeviceChange = useCallback(
+    (deviceId: string) => {
+      setActiveDeviceId(deviceId);
+      clientRef.current?.send({ type: 'connect_device', deviceId });
+    },
+    [setActiveDeviceId],
+  );
+
+  const handleRemoveDevice = useCallback(() => {
+    if (!activeDeviceId) return;
+    const device = devices.find((d) => d.deviceId === activeDeviceId);
+    if (!device || device.connected) return;
+    clientRef.current?.send({ type: 'remove_device', deviceId: activeDeviceId });
+  }, [activeDeviceId, devices]);
 
   const waitForExportReady = useCallback((deviceId: string, mode: ExportMode, timeoutMs = 60_000) => {
     return new Promise<ExportReadyMessage>((resolve, reject) => {
@@ -196,55 +232,84 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="toolbar">
-        <h1>Android Logcat Studio</h1>
-        <SearchBar value={searchQuery} onChange={handleSearchChange} />
-      </header>
-      <DeviceTabs
-        devices={devices}
-        activeDeviceId={activeDeviceId}
-        onSelect={handleDeviceChange}
-      />
-      <section className="query-region" aria-label="Query controls">
-        <QueryBar value={filterQuery} onChange={handleFilterChange} />
-        <div className="query-region__actions">
+        <div className="toolbar__left">
+          <h1>{t(locale, 'appTitle')}</h1>
+          <DeviceSelect
+            devices={devices}
+            activeDeviceId={activeDeviceId}
+            onChange={handleDeviceChange}
+            locale={locale}
+          />
+        </div>
+        <div className="toolbar__right">
+          <button className="toolbar-btn" type="button" onClick={clearLogs} title={t(locale, 'clear')}>
+            {t(locale, 'clear')}
+          </button>
           <button
-            className="refresh-devices"
+            className={`toolbar-btn${paused ? ' toolbar-btn--active' : ''}`}
+            type="button"
+            onClick={togglePaused}
+            title={paused ? t(locale, 'resume') : t(locale, 'pause')}
+            aria-pressed={paused}
+          >
+            {paused ? t(locale, 'resume') : t(locale, 'pause')}
+          </button>
+          <button
+            className="toolbar-btn"
             type="button"
             onClick={handleRefreshDevices}
             disabled={!connected}
+            title={t(locale, 'refreshDevices')}
           >
-            Refresh Devices
+            {t(locale, 'refreshDevices')}
           </button>
           <button
-            className="refresh-devices"
+            className="toolbar-btn"
             type="button"
             onClick={handleRemoveDevice}
             disabled={!canRemove}
-            title="Remove device"
+            title={t(locale, 'removeDevice')}
           >
-            Remove device
+            {t(locale, 'removeDevice')}
           </button>
           <button
-            className="refresh-devices"
+            className="toolbar-btn"
             type="button"
             disabled={!canExport}
             onClick={() => void runExport('all')}
+            title={t(locale, 'exportAll')}
           >
-            Export all
+            {t(locale, 'exportAll')}
           </button>
           <button
-            className="refresh-devices"
+            className="toolbar-btn"
             type="button"
             disabled={!canExport}
             onClick={() => void runExport('filtered')}
+            title={t(locale, 'exportFiltered')}
           >
-            Export filtered
+            {t(locale, 'exportFiltered')}
           </button>
+          <button className="toolbar-btn" type="button" onClick={openSettings} title={t(locale, 'settings')}>
+            {t(locale, 'settings')}
+          </button>
+          <SearchBar value={searchQuery} onChange={handleSearchChange} locale={locale} />
         </div>
+      </header>
+      <section className="query-region" aria-label="Query controls">
+        <QueryBar
+          packageFilter={packageFilter}
+          tagFilter={tagFilter}
+          selectedLevels={selectedLevels}
+          onPackageChange={handlePackageChange}
+          onTagChange={handleTagChange}
+          onLevelToggle={handleLevelToggle}
+          locale={locale}
+        />
       </section>
       <section className="content-grid" aria-label="Log workbench">
-        <LogView logs={logs} searchQuery={searchQuery} />
-        <StatsPanel stats={stats} />
+        <LogView logs={logs} searchQuery={searchQuery} settings={settings} />
+        <StatsPanel stats={stats} locale={locale} />
       </section>
       <StatusBar
         connected={connected}
@@ -252,7 +317,10 @@ export function App() {
         recorderPath={recorderPath}
         visibleLogCount={logs.length}
         warning={statusWarning}
+        paused={paused}
+        locale={locale}
       />
+      <SettingsPanel />
     </main>
   );
 }

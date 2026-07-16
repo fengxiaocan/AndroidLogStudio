@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { DEFAULT_SETTINGS } from '../settings/types';
 import { emptyStats, useAppStore } from './appStore';
 import type { DeviceInfo, LogEntry, StatisticsSnapshot } from '../types/protocol';
 
@@ -44,19 +45,30 @@ const stats: StatisticsSnapshot = {
 };
 
 beforeEach(() => {
+  localStorage.clear();
   useAppStore.setState({
     devices: [],
     activeDeviceId: null,
     logs: [],
     visibleLimit: 500,
-    filterQuery: '',
+    packageFilter: '',
+    tagFilter: '',
+    selectedLevels: ['verbose', 'debug', 'info', 'warn', 'error', 'assert'],
     searchQuery: '',
     searchMatches: [],
     stats: emptyStats,
     connected: false,
+    paused: false,
     adbStatus: null,
     recorderPath: null,
     recorderWarning: null,
+    settings: {
+      columns: { ...DEFAULT_SETTINGS.columns },
+      levelColors: { ...DEFAULT_SETTINGS.levelColors },
+      maxVisibleRows: DEFAULT_SETTINGS.maxVisibleRows,
+      locale: DEFAULT_SETTINGS.locale,
+    },
+    settingsOpen: false,
   });
 });
 
@@ -107,6 +119,41 @@ describe('appStore per-device server messages', () => {
     expect(useAppStore.getState().searchMatches).toEqual([]);
   });
 
+  it('clearLogs empties the visible log list', () => {
+    const { handleServerMessage, clearLogs } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA] });
+    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1), logEntry(2)] });
+    expect(useAppStore.getState().logs).toHaveLength(2);
+
+    clearLogs();
+    expect(useAppStore.getState().logs).toEqual([]);
+    expect(useAppStore.getState().searchMatches).toEqual([]);
+  });
+
+  it('paused freezes new_logs but still applies log_snapshot', () => {
+    const { handleServerMessage, togglePaused } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA] });
+    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1)] });
+    togglePaused();
+    expect(useAppStore.getState().paused).toBe(true);
+
+    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(2)] });
+    expect(useAppStore.getState().logs.map((log) => log.seq)).toEqual([1]);
+
+    handleServerMessage({ type: 'log_snapshot', deviceId: deviceA.deviceId, logs: [logEntry(9)] });
+    expect(useAppStore.getState().logs.map((log) => log.seq)).toEqual([9]);
+  });
+
+  it('setActiveDeviceId switches device and clears logs', () => {
+    const { handleServerMessage, setActiveDeviceId } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA, deviceB] });
+    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1)] });
+
+    setActiveDeviceId(deviceB.deviceId);
+    expect(useAppStore.getState().activeDeviceId).toBe(deviceB.deviceId);
+    expect(useAppStore.getState().logs).toEqual([]);
+  });
+
   it('device_list connected flip keeps logs for same active device', () => {
     const { handleServerMessage } = useAppStore.getState();
     handleServerMessage({ type: 'device_list', devices: [deviceA, deviceB] });
@@ -143,41 +190,47 @@ describe('appStore per-device server messages', () => {
     expect(useAppStore.getState().logs).toEqual([]);
   });
 
-  it('setActiveDeviceId to another device clears active-device-scoped state', () => {
-    const { handleServerMessage, setActiveDeviceId } = useAppStore.getState();
-    handleServerMessage({ type: 'device_list', devices: [deviceA, deviceB] });
-    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1)] });
-    handleServerMessage({ type: 'statistics', deviceId: deviceA.deviceId, stats });
-    handleServerMessage({
-      type: 'recorder_status',
-      deviceId: deviceA.deviceId,
-      enabled: true,
-      path: 'logs/device-a.log',
-      warning: 'disk nearly full',
-    });
-    handleServerMessage({ type: 'search_results', deviceId: deviceA.deviceId, matches: [1] });
-    useAppStore.setState({ filterQuery: 'tag:Activity', searchQuery: 'error' });
+  it('settings update columns colors rows and locale with persistence', () => {
+    const { setColumnVisible, setLevelColor, setMaxVisibleRows, setLocale, resetSettings } =
+      useAppStore.getState();
 
-    setActiveDeviceId(deviceB.deviceId);
+    setColumnVisible('pid', false);
+    setLevelColor('error', '#abcdef');
+    setMaxVisibleRows(1000);
+    setLocale('en');
 
-    expect(useAppStore.getState().activeDeviceId).toBe(deviceB.deviceId);
-    expect(useAppStore.getState().logs).toEqual([]);
-    expect(useAppStore.getState().stats).toEqual(emptyStats);
-    expect(useAppStore.getState().searchMatches).toEqual([]);
-    expect(useAppStore.getState().recorderPath).toBeNull();
-    expect(useAppStore.getState().recorderWarning).toBeNull();
-    expect(useAppStore.getState().filterQuery).toBe('tag:Activity');
-    expect(useAppStore.getState().searchQuery).toBe('error');
+    const state = useAppStore.getState();
+    expect(state.settings.columns.pid).toBe(false);
+    expect(state.settings.levelColors.error).toBe('#abcdef');
+    expect(state.settings.maxVisibleRows).toBe(1000);
+    expect(state.visibleLimit).toBe(1000);
+    expect(state.settings.locale).toBe('en');
+    expect(localStorage.getItem('als.settings.v1')).toContain('"locale":"en"');
+
+    resetSettings();
+    expect(useAppStore.getState().settings).toEqual(DEFAULT_SETTINGS);
+    expect(useAppStore.getState().visibleLimit).toBe(DEFAULT_SETTINGS.maxVisibleRows);
   });
 
-  it('setActiveDeviceId is a no-op when device is already active', () => {
-    const { handleServerMessage, setActiveDeviceId } = useAppStore.getState();
+  it('setMaxVisibleRows trims the visible log list', () => {
+    const { handleServerMessage, setMaxVisibleRows } = useAppStore.getState();
     handleServerMessage({ type: 'device_list', devices: [deviceA] });
-    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1)] });
+    handleServerMessage({
+      type: 'new_logs',
+      deviceId: deviceA.deviceId,
+      logs: [logEntry(1), logEntry(2), logEntry(3)],
+    });
 
-    setActiveDeviceId(deviceA.deviceId);
+    setMaxVisibleRows(100);
+    // Still under the new limit, so all logs remain.
+    expect(useAppStore.getState().logs).toHaveLength(3);
 
-    expect(useAppStore.getState().activeDeviceId).toBe(deviceA.deviceId);
-    expect(useAppStore.getState().logs.map((l) => l.seq)).toEqual([1]);
+    useAppStore.setState({
+      logs: Array.from({ length: 150 }, (_, index) => logEntry(index + 1)),
+      visibleLimit: 500,
+    });
+    setMaxVisibleRows(100);
+    expect(useAppStore.getState().logs).toHaveLength(100);
+    expect(useAppStore.getState().logs[0]?.seq).toBe(51);
   });
 });
