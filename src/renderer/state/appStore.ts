@@ -27,6 +27,7 @@ interface AppState {
   recorderWarning: string | null;
   setFilterQuery: (filterQuery: string) => void;
   setSearchQuery: (searchQuery: string) => void;
+  setActiveDeviceId: (deviceId: string) => void;
   handleServerMessage: (message: ServerMessage) => void;
 }
 
@@ -62,6 +63,14 @@ export const useAppStore = create<AppState>((set) => ({
   recorderWarning: null,
   setFilterQuery: (filterQuery) => set({ filterQuery }),
   setSearchQuery: (searchQuery) => set({ searchQuery }),
+  setActiveDeviceId: (deviceId) =>
+    set((state) => {
+      if (deviceId === state.activeDeviceId) return {};
+      return {
+        activeDeviceId: deviceId,
+        ...emptyActiveDeviceState(),
+      };
+    }),
   handleServerMessage: (message) => {
     switch (message.type) {
       case 'device_list':

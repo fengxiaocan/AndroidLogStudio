@@ -21,11 +21,14 @@ export function App() {
   const recorderWarning = useAppStore((state) => state.recorderWarning);
   const setFilterQuery = useAppStore((state) => state.setFilterQuery);
   const setSearchQuery = useAppStore((state) => state.setSearchQuery);
+  const setActiveDeviceId = useAppStore((state) => state.setActiveDeviceId);
   const handleServerMessage = useAppStore((state) => state.handleServerMessage);
   const clientRef = useRef<EngineClient | null>(null);
   const hasConnectedRef = useRef(false);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const statusWarning = [recorderWarning, refreshWarning].filter(Boolean).join(' · ') || null;
+  const activeDevice = devices.find((device) => device.deviceId === activeDeviceId);
+  const canRemove = Boolean(activeDevice && !activeDevice.connected);
 
   useEffect(() => {
     if (hasConnectedRef.current) {
@@ -36,6 +39,31 @@ export function App() {
     clientRef.current = new EngineClient(handleServerMessage);
     void clientRef.current.connect();
   }, [handleServerMessage]);
+
+  // When active device changes (including engine-driven), request snapshot + re-apply filter
+  useEffect(() => {
+    if (!activeDeviceId || !connected) return;
+    clientRef.current?.send({ type: 'connect_device', deviceId: activeDeviceId });
+    if (filterQuery) {
+      clientRef.current?.send({ type: 'set_filter', deviceId: activeDeviceId, query: filterQuery });
+    }
+    // intentional: not filterQuery — filter has its own handler
+  }, [activeDeviceId, connected]);
+
+  const handleDeviceChange = useCallback(
+    (deviceId: string) => {
+      setActiveDeviceId(deviceId);
+      clientRef.current?.send({ type: 'connect_device', deviceId });
+    },
+    [setActiveDeviceId],
+  );
+
+  const handleRemoveDevice = useCallback(() => {
+    if (!activeDeviceId) return;
+    const device = devices.find((d) => d.deviceId === activeDeviceId);
+    if (!device || device.connected) return;
+    clientRef.current?.send({ type: 'remove_device', deviceId: activeDeviceId });
+  }, [activeDeviceId, devices]);
 
   const handleFilterChange = useCallback(
     (next: string) => {
@@ -75,17 +103,32 @@ export function App() {
         <h1>Android Logcat Studio</h1>
         <SearchBar value={searchQuery} onChange={handleSearchChange} />
       </header>
-      <DeviceTabs devices={devices} activeDeviceId={activeDeviceId} />
+      <DeviceTabs
+        devices={devices}
+        activeDeviceId={activeDeviceId}
+        onSelect={handleDeviceChange}
+      />
       <section className="query-region" aria-label="Query controls">
         <QueryBar value={filterQuery} onChange={handleFilterChange} />
-        <button
-          className="refresh-devices"
-          type="button"
-          onClick={handleRefreshDevices}
-          disabled={!connected}
-        >
-          Refresh Devices
-        </button>
+        <div className="query-region__actions">
+          <button
+            className="refresh-devices"
+            type="button"
+            onClick={handleRefreshDevices}
+            disabled={!connected}
+          >
+            Refresh Devices
+          </button>
+          <button
+            className="refresh-devices"
+            type="button"
+            onClick={handleRemoveDevice}
+            disabled={!canRemove}
+            title="Remove device"
+          >
+            Remove device
+          </button>
+        </div>
       </section>
       <section className="content-grid" aria-label="Log workbench">
         <LogView logs={logs} searchQuery={searchQuery} />

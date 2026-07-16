@@ -142,4 +142,42 @@ describe('appStore per-device server messages', () => {
     expect(useAppStore.getState().activeDeviceId).toBe(deviceB.deviceId);
     expect(useAppStore.getState().logs).toEqual([]);
   });
+
+  it('setActiveDeviceId to another device clears active-device-scoped state', () => {
+    const { handleServerMessage, setActiveDeviceId } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA, deviceB] });
+    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1)] });
+    handleServerMessage({ type: 'statistics', deviceId: deviceA.deviceId, stats });
+    handleServerMessage({
+      type: 'recorder_status',
+      deviceId: deviceA.deviceId,
+      enabled: true,
+      path: 'logs/device-a.log',
+      warning: 'disk nearly full',
+    });
+    handleServerMessage({ type: 'search_results', deviceId: deviceA.deviceId, matches: [1] });
+    useAppStore.setState({ filterQuery: 'tag:Activity', searchQuery: 'error' });
+
+    setActiveDeviceId(deviceB.deviceId);
+
+    expect(useAppStore.getState().activeDeviceId).toBe(deviceB.deviceId);
+    expect(useAppStore.getState().logs).toEqual([]);
+    expect(useAppStore.getState().stats).toEqual(emptyStats);
+    expect(useAppStore.getState().searchMatches).toEqual([]);
+    expect(useAppStore.getState().recorderPath).toBeNull();
+    expect(useAppStore.getState().recorderWarning).toBeNull();
+    expect(useAppStore.getState().filterQuery).toBe('tag:Activity');
+    expect(useAppStore.getState().searchQuery).toBe('error');
+  });
+
+  it('setActiveDeviceId is a no-op when device is already active', () => {
+    const { handleServerMessage, setActiveDeviceId } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA] });
+    handleServerMessage({ type: 'new_logs', deviceId: deviceA.deviceId, logs: [logEntry(1)] });
+
+    setActiveDeviceId(deviceA.deviceId);
+
+    expect(useAppStore.getState().activeDeviceId).toBe(deviceA.deviceId);
+    expect(useAppStore.getState().logs.map((l) => l.seq)).toEqual([1]);
+  });
 });
