@@ -272,6 +272,23 @@ export function App() {
           >
             {t(locale, 'removeDevice')}
           </button>
+          <button className="toolbar-btn" type="button" onClick={openSettings} title={t(locale, 'settings')}>
+            {t(locale, 'settings')}
+          </button>
+          <SearchBar value={searchQuery} onChange={handleSearchChange} locale={locale} />
+        </div>
+      </header>
+      <section className="query-region" aria-label="Query controls">
+        <QueryBar
+          packageFilter={packageFilter}
+          tagFilter={tagFilter}
+          selectedLevels={selectedLevels}
+          onPackageChange={handlePackageChange}
+          onTagChange={handleTagChange}
+          onLevelToggle={handleLevelToggle}
+          locale={locale}
+        />
+        <div className="query-region__actions">
           <button
             className="toolbar-btn"
             type="button"
@@ -290,22 +307,7 @@ export function App() {
           >
             {t(locale, 'exportFiltered')}
           </button>
-          <button className="toolbar-btn" type="button" onClick={openSettings} title={t(locale, 'settings')}>
-            {t(locale, 'settings')}
-          </button>
-          <SearchBar value={searchQuery} onChange={handleSearchChange} locale={locale} />
         </div>
-      </header>
-      <section className="query-region" aria-label="Query controls">
-        <QueryBar
-          packageFilter={packageFilter}
-          tagFilter={tagFilter}
-          selectedLevels={selectedLevels}
-          onPackageChange={handlePackageChange}
-          onTagChange={handleTagChange}
-          onLevelToggle={handleLevelToggle}
-          locale={locale}
-        />
       </section>
       <section className="content-grid" aria-label="Log workbench">
         <LogView logs={logs} searchQuery={searchQuery} settings={settings} />
