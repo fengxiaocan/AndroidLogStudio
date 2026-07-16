@@ -100,10 +100,23 @@ async function createWindow() {
 
 ipcMain.handle('engine:get-url', async () => engineUrl || engineReady);
 
-function isAllowedExportTempPath(tempPath: string): boolean {
-  const resolved = path.resolve(tempPath);
-  const exportsDir = path.resolve(process.cwd(), 'logs', 'exports');
-  return resolved === exportsDir || resolved.startsWith(exportsDir + path.sep);
+async function resolveAllowedExportTempPath(tempPath: string): Promise<string | null> {
+  // Resolve through realpath so symlink / ".." tricks cannot escape logs/exports.
+  const exportsDirLogical = path.resolve(process.cwd(), 'logs', 'exports');
+  try {
+    await fs.mkdir(exportsDirLogical, { recursive: true });
+    const exportsDir = await fs.realpath(exportsDirLogical);
+    const candidate = await fs.realpath(path.resolve(tempPath));
+    const underExports =
+      candidate === exportsDir || candidate.startsWith(exportsDir + path.sep);
+    // Only engine-minted export temps (*.log) are accepted.
+    if (!underExports || path.extname(candidate).toLowerCase() !== '.log') {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
 }
 
 ipcMain.handle(
@@ -117,14 +130,10 @@ ipcMain.handle(
     if (!tempPath || typeof tempPath !== 'string') {
       return { canceled: false, error: 'missing tempPath' };
     }
-    if (!isAllowedExportTempPath(tempPath)) {
-      return { canceled: false, error: 'temp path not allowed' };
-    }
 
-    try {
-      await fs.access(tempPath);
-    } catch {
-      return { canceled: false, error: 'temp file missing' };
+    const safeTempPath = await resolveAllowedExportTempPath(tempPath);
+    if (!safeTempPath) {
+      return { canceled: false, error: 'temp path not allowed' };
     }
 
     const result = await dialog.showSaveDialog({
@@ -136,16 +145,16 @@ ipcMain.handle(
     });
 
     if (result.canceled || !result.filePath) {
-      await fs.unlink(tempPath).catch(() => undefined);
+      await fs.unlink(safeTempPath).catch(() => undefined);
       return { canceled: true };
     }
 
     try {
-      await fs.copyFile(tempPath, result.filePath);
-      await fs.unlink(tempPath).catch(() => undefined);
+      await fs.copyFile(safeTempPath, result.filePath);
+      await fs.unlink(safeTempPath).catch(() => undefined);
       return { canceled: false, path: result.filePath };
     } catch (error) {
-      await fs.unlink(tempPath).catch(() => undefined);
+      await fs.unlink(safeTempPath).catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
       return { canceled: false, error: message };
     }
