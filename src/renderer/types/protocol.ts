@@ -44,6 +44,7 @@ export interface StatisticsSnapshot {
 export type ClientMessage =
   | { type: 'connect_device'; deviceId: string }
   | { type: 'disconnect_device'; deviceId: string }
+  | { type: 'remove_device'; deviceId: string }
   | { type: 'set_filter'; deviceId: string; query: string }
   | { type: 'set_search'; deviceId: string; query: string; options: SearchOptions }
   | { type: 'get_history'; deviceId: string; beforeSeq: number; limit: number }
