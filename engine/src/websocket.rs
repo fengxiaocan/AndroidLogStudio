@@ -41,6 +41,9 @@ pub enum ClientMessage {
     DisconnectDevice {
         device_id: String,
     },
+    RemoveDevice {
+        device_id: String,
+    },
     SetFilter {
         device_id: String,
         query: String,
@@ -161,6 +164,15 @@ async fn handle_socket(socket: WebSocket) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                if manager.poll_logcat_exits().await {
+                    manager.refresh_adb_status_message();
+                    if !send_server_message(&mut sender, &device_list_message(&manager)).await {
+                        break;
+                    }
+                    if !send_adb_status(&mut sender, manager.adb_status()).await {
+                        break;
+                    }
+                }
                 if manager.is_mock_fallback() {
                     if !send_mock_tick(&mut sender, &mut manager).await {
                         break;
@@ -227,10 +239,24 @@ async fn handle_client_text(
                 && send_server_message(sender, &device_list_message(manager)).await
                 && send_refresh_device_state(sender, manager).await
         }
-        Ok(
-            ClientMessage::ConnectDevice { device_id }
-            | ClientMessage::DisconnectDevice { device_id },
-        ) => validate_device(sender, manager, &device_id).await,
+        Ok(ClientMessage::ConnectDevice { device_id }) => {
+            if !manager.has_device(&device_id) {
+                return send_error(sender, format!("unknown device: {device_id}")).await;
+            }
+            send_visible_snapshot(sender, manager, &device_id).await
+                && send_statistics(sender, manager, &device_id).await
+                && send_recorder_status(sender, manager, &device_id).await
+        }
+        Ok(ClientMessage::DisconnectDevice { device_id }) => {
+            // Intentionally stub this iteration (spec): validate only.
+            validate_device(sender, manager, &device_id).await
+        }
+        Ok(ClientMessage::RemoveDevice { device_id }) => {
+            match manager.remove_device(&device_id) {
+                Ok(()) => send_server_message(sender, &device_list_message(manager)).await,
+                Err(error) => send_error(sender, error.to_string()).await,
+            }
+        }
         Err(error) => send_error(sender, format!("invalid client message: {error}")).await,
     }
 }
@@ -572,6 +598,19 @@ mod tests {
         .expect("refresh_devices should deserialize");
 
         assert!(matches!(message, ClientMessage::RefreshDevices));
+    }
+
+    #[test]
+    fn remove_device_message_deserializes() {
+        let message = serde_json::from_value::<ClientMessage>(json!({
+            "type": "remove_device",
+            "deviceId": "serial-a"
+        }))
+        .expect("remove_device should deserialize");
+        assert!(matches!(
+            message,
+            ClientMessage::RemoveDevice { device_id } if device_id == "serial-a"
+        ));
     }
 
     #[test]
