@@ -111,33 +111,173 @@ impl DeviceManager {
         devices: Vec<AdbDevice>,
         error: Option<String>,
     ) {
-        self.stop_logcat_children();
-        *self = Self::from_scan_result(path, devices, error);
+        self.merge_scan_result(path, devices, error);
+    }
+
+    /// Merge a scan into existing state without wiping buffers.
+    /// - error: soft-disconnect all ADB devices; update adb_status; keep contexts
+    /// - success: add new devices, soft-disconnect missing ADB serials, update names/path
+    /// Does not start logcat children (caller starts them for online devices).
+    pub fn merge_scan_result(
+        &mut self,
+        path: Option<String>,
+        devices: Vec<AdbDevice>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            let has_adb = self
+                .devices
+                .iter()
+                .any(|device| device.source == DeviceSource::Adb);
+            if has_adb {
+                for device in self.devices.iter_mut() {
+                    if device.source == DeviceSource::Adb {
+                        device.connected = false;
+                    }
+                }
+                self.stop_logcat_children();
+                self.adb_status = AdbStatus {
+                    available: path.is_some(),
+                    mode: AdbStatusMode::Bundled,
+                    path,
+                    message: format!("ADB: {error}"),
+                };
+            } else {
+                self.switch_to_mock_fallback(format!("ADB: {error}, using mock device"));
+            }
+            return;
+        }
+
+        // Empty scan with existing ADB devices → soft-disconnect all ADB; do not force mock.
+        if devices.is_empty() {
+            let has_adb = self
+                .devices
+                .iter()
+                .any(|device| device.source == DeviceSource::Adb);
+            if has_adb {
+                for device in self.devices.iter_mut() {
+                    if device.source == DeviceSource::Adb {
+                        device.connected = false;
+                    }
+                }
+                self.stop_logcat_children();
+                let path_string = path.unwrap_or_else(|| "libs/<platform>/adb".to_string());
+                self.adb_status = AdbStatus {
+                    available: true,
+                    mode: AdbStatusMode::Bundled,
+                    path: Some(path_string),
+                    message: "ADB: no online devices".to_string(),
+                };
+            } else {
+                self.switch_to_mock_fallback("ADB: no online devices, using mock device");
+            }
+            return;
+        }
+
+        // If we are currently mock-only, replace with ADB set (first real attach).
+        if self.is_mock_fallback() {
+            let path_string = path.unwrap_or_else(|| "libs/<platform>/adb".to_string());
+            *self = Self::from_adb_devices(path_string, devices);
+            return;
+        }
+
+        let path_string = path.unwrap_or_else(|| "libs/<platform>/adb".to_string());
+        let log_root = PathBuf::from("logs");
+        let scanned: HashMap<String, AdbDevice> = devices
+            .into_iter()
+            .map(|device| (device.serial.clone(), device))
+            .collect();
+
+        // Soft-disconnect ADB devices missing from scan
+        let existing_ids: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|device| device.source == DeviceSource::Adb)
+            .map(|device| device.device_id.clone())
+            .collect();
+        for id in &existing_ids {
+            if !scanned.contains_key(id) {
+                self.mark_disconnected(id);
+            }
+        }
+
+        // Update or add scanned devices
+        for (serial, adb_device) in &scanned {
+            if let Some(device) = self
+                .devices
+                .iter_mut()
+                .find(|device| device.device_id == *serial)
+            {
+                device.connected = true;
+                device.device_name = adb_device.display_name.clone();
+                device.source = DeviceSource::Adb;
+            } else {
+                let recorder = Recorder::new(RecorderConfig {
+                    enabled: true,
+                    root: log_root.clone(),
+                    device_name: serial.clone(),
+                });
+                let context = DeviceContext::new(
+                    serial.clone(),
+                    adb_device.display_name.clone(),
+                    1_000_000,
+                    recorder,
+                );
+                self.contexts.insert(serial.clone(), context);
+                self.devices.push(DeviceInfo {
+                    device_id: serial.clone(),
+                    device_name: adb_device.display_name.clone(),
+                    connected: true,
+                    source: DeviceSource::Adb,
+                });
+            }
+        }
+
+        self.adb_status = AdbStatus {
+            available: true,
+            mode: AdbStatusMode::Bundled,
+            path: Some(path_string),
+            message: String::new(),
+        };
+        self.refresh_adb_status_message();
+    }
+
+    pub fn refresh_adb_status_message(&mut self) {
+        if self.is_mock_fallback() {
+            return;
+        }
+        let online = self.devices.iter().filter(|device| device.connected).count();
+        let disconnected = self
+            .devices
+            .iter()
+            .filter(|device| !device.connected)
+            .count();
+        self.adb_status.message = if disconnected == 0 {
+            format!("ADB: {online} device(s) connected")
+        } else {
+            format!("ADB: {online} online, {disconnected} disconnected")
+        };
     }
 
     pub async fn refresh(&mut self, project_root: &std::path::Path) {
-        self.stop_logcat_children_async().await;
-
         let adb_path = resolve_adb_path(project_root).adb;
         let adb_path_string = adb_path.display().to_string();
         if !adb_path.exists() {
-            self.switch_to_mock_fallback_async(format!(
-                "ADB: missing {adb_path_string}, using mock device"
-            ))
-            .await;
+            self.merge_scan_result(
+                Some(adb_path_string.clone()),
+                Vec::new(),
+                Some(format!("missing {adb_path_string}")),
+            );
             return;
         }
 
         match list_devices(&adb_path).await {
             Ok(devices) => {
-                let has_adb_devices = !devices.is_empty();
-                *self = Self::from_scan_result(Some(adb_path_string), devices, None);
-                if has_adb_devices {
-                    self.start_logcat_processes(&adb_path).await;
-                }
+                self.merge_scan_result(Some(adb_path_string), devices, None);
+                self.ensure_logcat_for_connected(&adb_path).await;
             }
             Err(error) => {
-                *self = Self::from_scan_result(
+                self.merge_scan_result(
                     Some(adb_path_string),
                     Vec::new(),
                     Some(error.to_string()),
@@ -204,6 +344,53 @@ impl DeviceManager {
                     ))
                     .await;
                     return;
+                }
+            }
+        }
+    }
+
+    /// Restart logcat children for every currently connected ADB device.
+    /// Buffers/contexts are preserved; only the process pipes are recreated.
+    async fn ensure_logcat_for_connected(&mut self, adb_path: &std::path::Path) {
+        self.stop_logcat_children_async().await;
+
+        let online: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|device| device.source == DeviceSource::Adb && device.connected)
+            .map(|device| device.device_id.clone())
+            .collect();
+
+        if online.is_empty() {
+            self.log_receiver = None;
+            return;
+        }
+
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.log_receiver = Some(receiver);
+
+        for device_id in online {
+            let mut command = logcat_command(adb_path, &device_id);
+            command.stdout(Stdio::piped()).stderr(Stdio::null());
+            match command.spawn() {
+                Ok(mut child) => {
+                    if let Some(stdout) = child.stdout.take() {
+                        let serial = device_id.clone();
+                        let sender = sender.clone();
+                        tokio::spawn(async move {
+                            let mut lines = BufReader::new(stdout).lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                let _ = sender.send((serial.clone(), line));
+                            }
+                        });
+                    }
+                    self.logcat_children.insert(device_id, child);
+                }
+                Err(error) => {
+                    // Soft-fail one device: mark disconnected, continue others.
+                    self.mark_disconnected(&device_id);
+                    self.adb_status.message =
+                        format!("ADB: failed to start logcat for {device_id}: {error}");
                 }
             }
         }
@@ -328,6 +515,9 @@ impl DeviceManager {
             if self.mark_disconnected(&device_id) {
                 dirty = true;
             }
+        }
+        if dirty {
+            self.refresh_adb_status_message();
         }
         dirty
     }
@@ -596,26 +786,109 @@ mod tests {
     }
 
     #[test]
-    fn refresh_replaces_device_state() {
-        let mut manager = DeviceManager::from_adb_devices(
+    fn merge_scan_soft_disconnects_missing_and_keeps_buffer() {
+        let log_root = tempdir().expect("tempdir");
+        let mut manager = DeviceManager::from_adb_devices_with_log_root(
+            "libs/linux/adb".to_string(),
+            vec![
+                AdbDevice {
+                    serial: "keep".to_string(),
+                    display_name: "Keep".to_string(),
+                },
+                AdbDevice {
+                    serial: "gone".to_string(),
+                    display_name: "Gone".to_string(),
+                },
+            ],
+            log_root.path().to_path_buf(),
+        );
+        {
+            let ctx = manager.contexts.get_mut("gone").unwrap();
+            ctx.ingest_line("07-04 12:34:56.789  1  1 I Tag: history");
+        }
+
+        manager.merge_scan_result(
+            Some("libs/linux/adb".to_string()),
+            vec![AdbDevice {
+                serial: "keep".to_string(),
+                display_name: "Keep".to_string(),
+            }],
+            None,
+        );
+
+        assert_eq!(manager.device_list().len(), 2);
+        let gone = manager
+            .device_list()
+            .iter()
+            .find(|d| d.device_id == "gone")
+            .unwrap();
+        assert!(!gone.connected);
+        let snap = manager.latest_visible_snapshot("gone", 10).unwrap();
+        assert_eq!(snap.logs.len(), 1);
+
+        let keep = manager
+            .device_list()
+            .iter()
+            .find(|d| d.device_id == "keep")
+            .unwrap();
+        assert!(keep.connected);
+    }
+
+    #[test]
+    fn merge_scan_adds_new_device_without_dropping_existing() {
+        let log_root = tempdir().expect("tempdir");
+        let mut manager = DeviceManager::from_adb_devices_with_log_root(
             "libs/linux/adb".to_string(),
             vec![AdbDevice {
                 serial: "old".to_string(),
                 display_name: "Old".to_string(),
             }],
+            log_root.path().to_path_buf(),
         );
+        {
+            let ctx = manager.contexts.get_mut("old").unwrap();
+            ctx.ingest_line("07-04 12:34:56.789  1  1 I Tag: old-log");
+        }
 
-        manager.replace_with_scan_result(
+        manager.merge_scan_result(
             Some("libs/linux/adb".to_string()),
-            vec![AdbDevice {
-                serial: "new".to_string(),
-                display_name: "New".to_string(),
-            }],
+            vec![
+                AdbDevice {
+                    serial: "old".to_string(),
+                    display_name: "Old".to_string(),
+                },
+                AdbDevice {
+                    serial: "new".to_string(),
+                    display_name: "New".to_string(),
+                },
+            ],
             None,
         );
 
-        assert_eq!(manager.device_list().len(), 1);
-        assert_eq!(manager.device_list()[0].device_id, "new");
+        assert_eq!(manager.device_list().len(), 2);
+        assert!(manager.has_device("old"));
+        assert!(manager.has_device("new"));
+        let snap = manager.latest_visible_snapshot("old", 10).unwrap();
+        assert_eq!(snap.logs.len(), 1);
+    }
+
+    #[test]
+    fn merge_scan_error_soft_disconnects_all_adb_devices() {
+        let mut manager = DeviceManager::from_adb_devices(
+            "libs/linux/adb".to_string(),
+            vec![AdbDevice {
+                serial: "serial-a".to_string(),
+                display_name: "Phone A".to_string(),
+            }],
+        );
+        manager.merge_scan_result(
+            Some("libs/linux/adb".to_string()),
+            Vec::new(),
+            Some("permission denied".to_string()),
+        );
+        assert!(!manager.device_list()[0].connected);
+        assert!(manager.adb_status().message.contains("permission denied"));
+        assert!(manager.has_device("serial-a"));
     }
 
     #[test]
