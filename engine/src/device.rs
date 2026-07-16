@@ -4,12 +4,39 @@ use crate::parser::parse_threadtime_line;
 use crate::recorder::{Recorder, RecorderStatus};
 use crate::ring_buffer::RingBuffer;
 use crate::statistics::Statistics;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct DeviceSnapshot {
     pub logs: Vec<LogEntry>,
     pub stats: StatisticsSnapshot,
     pub recorder_status: RecorderStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportMode {
+    All,
+    Filtered,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportResult {
+    pub line_count: usize,
+}
+
+pub fn format_threadtime_line(entry: &LogEntry) -> String {
+    format!(
+        "{} {} {:>5} {:>5} {} {}: {}",
+        entry.date,
+        entry.time,
+        entry.pid,
+        entry.tid,
+        entry.level.as_threadtime_char(),
+        entry.tag,
+        entry.message
+    )
 }
 
 pub struct DeviceContext {
@@ -108,11 +135,34 @@ impl DeviceContext {
             .map(|entry| entry.seq)
             .collect()
     }
+
+    pub fn export_logs(&self, mode: ExportMode, path: &Path) -> anyhow::Result<ExportResult> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+        let mut line_count = 0usize;
+        for entry in self.buffer.latest(usize::MAX) {
+            let include = match mode {
+                ExportMode::All => true,
+                ExportMode::Filtered => !entry.hidden,
+            };
+            if !include {
+                continue;
+            }
+            writeln!(writer, "{}", format_threadtime_line(&entry))?;
+            line_count += 1;
+        }
+        writer.flush()?;
+        Ok(ExportResult { line_count })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log_entry::LogLevel;
     use crate::recorder::RecorderConfig;
     use tempfile::tempdir;
 
@@ -188,5 +238,65 @@ mod tests {
         assert_eq!(snapshot.logs.len(), 1);
         assert_eq!(snapshot.logs[0].message, "error");
         assert_eq!(snapshot.stats.hidden, 1);
+    }
+
+    #[test]
+    fn format_threadtime_line_matches_parser_roundtrip_shape() {
+        let line = format_threadtime_line(&LogEntry {
+            seq: 1,
+            timestamp: 0,
+            date: "07-16".into(),
+            time: "12:34:56.789".into(),
+            pid: 1234,
+            tid: 5678,
+            level: LogLevel::Info,
+            tag: "ActivityManager".into(),
+            message: "hello".into(),
+            package_name: None,
+            foreground: None,
+            background: None,
+            hidden: false,
+            bookmarked: false,
+        });
+        assert_eq!(line, "07-16 12:34:56.789  1234  5678 I ActivityManager: hello");
+    }
+
+    #[test]
+    fn export_all_includes_hidden_filtered_skips_them() {
+        let dir = tempdir().expect("tempdir");
+        let mut device = new_test_device(100);
+        assert!(device.ingest_line("07-16 12:00:00.000  1  1 I Keep: stay").is_some());
+        assert!(device.ingest_line("07-16 12:00:01.000  1  1 I Drop: gone").is_some());
+        device.set_filter(FilterQuery::parse("tag:Keep"));
+
+        let all_path = dir.path().join("all.log");
+        let filtered_path = dir.path().join("filtered.log");
+        let all = device
+            .export_logs(ExportMode::All, &all_path)
+            .expect("export all");
+        let filtered = device
+            .export_logs(ExportMode::Filtered, &filtered_path)
+            .expect("export filtered");
+
+        assert_eq!(all.line_count, 2);
+        assert_eq!(filtered.line_count, 1);
+        let all_text = std::fs::read_to_string(&all_path).unwrap();
+        let filtered_text = std::fs::read_to_string(&filtered_path).unwrap();
+        assert!(all_text.contains("Keep: stay"));
+        assert!(all_text.contains("Drop: gone"));
+        assert!(filtered_text.contains("Keep: stay"));
+        assert!(!filtered_text.contains("Drop: gone"));
+    }
+
+    #[test]
+    fn export_empty_buffer_writes_zero_lines() {
+        let dir = tempdir().expect("tempdir");
+        let device = new_test_device(10);
+        let path = dir.path().join("empty.log");
+        let result = device
+            .export_logs(ExportMode::All, &path)
+            .expect("empty ok");
+        assert_eq!(result.line_count, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     }
 }

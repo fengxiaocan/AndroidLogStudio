@@ -12,6 +12,20 @@ pub enum LogLevel {
     Unknown,
 }
 
+impl LogLevel {
+    pub fn as_threadtime_char(self) -> char {
+        match self {
+            LogLevel::Verbose => 'V',
+            LogLevel::Debug => 'D',
+            LogLevel::Info => 'I',
+            LogLevel::Warn => 'W',
+            LogLevel::Error => 'E',
+            LogLevel::Assert => 'A',
+            LogLevel::Unknown => '?',
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
