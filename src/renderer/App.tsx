@@ -6,7 +6,11 @@ import { QueryBar } from './components/QueryBar';
 import { SearchBar } from './components/SearchBar';
 import { StatsPanel } from './components/StatsPanel';
 import { StatusBar } from './components/StatusBar';
+import { buildExportFileName } from './export/fileName';
 import { useAppStore } from './state/appStore';
+import type { ExportMode, ServerMessage } from './types/protocol';
+
+type ExportReadyMessage = Extract<ServerMessage, { type: 'export_ready' }>;
 
 export function App() {
   const connected = useAppStore((state) => state.connected);
@@ -25,10 +29,42 @@ export function App() {
   const handleServerMessage = useAppStore((state) => state.handleServerMessage);
   const clientRef = useRef<EngineClient | null>(null);
   const hasConnectedRef = useRef(false);
+  const pendingExportRef = useRef<{
+    deviceId: string;
+    mode: ExportMode;
+    resolve: (msg: ExportReadyMessage) => void;
+    reject: (err: Error) => void;
+  } | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const statusWarning = [recorderWarning, refreshWarning].filter(Boolean).join(' · ') || null;
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportHint, setExportHint] = useState<string | null>(null);
+  const statusWarning =
+    [recorderWarning, refreshWarning, exportHint].filter(Boolean).join(' · ') || null;
   const activeDevice = devices.find((device) => device.deviceId === activeDeviceId);
   const canRemove = Boolean(activeDevice && !activeDevice.connected);
+  const canExport = Boolean(activeDeviceId && connected && !exportBusy);
+
+  const onServerMessage = useCallback(
+    (message: ServerMessage) => {
+      if (message.type === 'export_ready') {
+        const pending = pendingExportRef.current;
+        if (
+          pending &&
+          pending.deviceId === message.deviceId &&
+          pending.mode === message.mode
+        ) {
+          pendingExportRef.current = null;
+          pending.resolve(message);
+        }
+      } else if (message.type === 'error' && pendingExportRef.current) {
+        const pending = pendingExportRef.current;
+        pendingExportRef.current = null;
+        pending.reject(new Error(message.message));
+      }
+      handleServerMessage(message);
+    },
+    [handleServerMessage],
+  );
 
   useEffect(() => {
     if (hasConnectedRef.current) {
@@ -36,9 +72,9 @@ export function App() {
     }
 
     hasConnectedRef.current = true;
-    clientRef.current = new EngineClient(handleServerMessage);
+    clientRef.current = new EngineClient(onServerMessage);
     void clientRef.current.connect();
-  }, [handleServerMessage]);
+  }, [onServerMessage]);
 
   // When active device changes (including engine-driven), request snapshot + re-apply filter
   useEffect(() => {
@@ -97,6 +133,66 @@ export function App() {
     setRefreshWarning(sent ? null : 'Unable to refresh devices while disconnected');
   }, []);
 
+  const waitForExportReady = useCallback((deviceId: string, mode: ExportMode, timeoutMs = 60_000) => {
+    return new Promise<ExportReadyMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (pendingExportRef.current) {
+          pendingExportRef.current = null;
+          reject(new Error('export timed out'));
+        }
+      }, timeoutMs);
+      pendingExportRef.current = {
+        deviceId,
+        mode,
+        resolve: (msg) => {
+          clearTimeout(timer);
+          resolve(msg);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      };
+    });
+  }, []);
+
+  const runExport = useCallback(
+    async (mode: ExportMode) => {
+      if (!activeDeviceId || exportBusy) return;
+      setExportBusy(true);
+      setExportHint(null);
+      try {
+        const wait = waitForExportReady(activeDeviceId, mode);
+        const sent = clientRef.current?.send({
+          type: 'export_logs',
+          deviceId: activeDeviceId,
+          mode,
+        });
+        if (!sent) {
+          pendingExportRef.current = null;
+          throw new Error('Unable to export while disconnected');
+        }
+        const ready = await wait;
+        const device = devices.find((d) => d.deviceId === activeDeviceId);
+        const defaultName = buildExportFileName(device?.deviceName ?? activeDeviceId, mode);
+        const saved = await window.als.exportSave(ready.path, defaultName);
+        if (saved.canceled) {
+          setExportHint('Export canceled');
+        } else if (saved.error) {
+          setExportHint(`Export failed: ${saved.error}`);
+        } else {
+          setExportHint(`Exported ${ready.lineCount} lines`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setExportHint(message);
+      } finally {
+        setExportBusy(false);
+      }
+    },
+    [activeDeviceId, devices, exportBusy, waitForExportReady],
+  );
+
   return (
     <main className="app-shell">
       <header className="toolbar">
@@ -127,6 +223,22 @@ export function App() {
             title="Remove device"
           >
             Remove device
+          </button>
+          <button
+            className="refresh-devices"
+            type="button"
+            disabled={!canExport}
+            onClick={() => void runExport('all')}
+          >
+            Export all
+          </button>
+          <button
+            className="refresh-devices"
+            type="button"
+            disabled={!canExport}
+            onClick={() => void runExport('filtered')}
+          >
+            Export filtered
           </button>
         </div>
       </section>

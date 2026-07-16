@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -98,6 +99,58 @@ async function createWindow() {
 }
 
 ipcMain.handle('engine:get-url', async () => engineUrl || engineReady);
+
+function isAllowedExportTempPath(tempPath: string): boolean {
+  const resolved = path.resolve(tempPath);
+  const exportsDir = path.resolve(process.cwd(), 'logs', 'exports');
+  return resolved === exportsDir || resolved.startsWith(exportsDir + path.sep);
+}
+
+ipcMain.handle(
+  'export:save',
+  async (
+    _event,
+    payload: { tempPath?: string; defaultName?: string },
+  ): Promise<{ canceled: boolean; path?: string; error?: string }> => {
+    const tempPath = payload?.tempPath;
+    const defaultName = payload?.defaultName || 'export.log';
+    if (!tempPath || typeof tempPath !== 'string') {
+      return { canceled: false, error: 'missing tempPath' };
+    }
+    if (!isAllowedExportTempPath(tempPath)) {
+      return { canceled: false, error: 'temp path not allowed' };
+    }
+
+    try {
+      await fs.access(tempPath);
+    } catch {
+      return { canceled: false, error: 'temp file missing' };
+    }
+
+    const result = await dialog.showSaveDialog({
+      defaultPath: defaultName,
+      filters: [
+        { name: 'Log files', extensions: ['log', 'txt'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+
+    if (result.canceled || !result.filePath) {
+      await fs.unlink(tempPath).catch(() => undefined);
+      return { canceled: true };
+    }
+
+    try {
+      await fs.copyFile(tempPath, result.filePath);
+      await fs.unlink(tempPath).catch(() => undefined);
+      return { canceled: false, path: result.filePath };
+    } catch (error) {
+      await fs.unlink(tempPath).catch(() => undefined);
+      const message = error instanceof Error ? error.message : String(error);
+      return { canceled: false, error: message };
+    }
+  },
+);
 
 app.whenReady().then(() => {
   startEngine();

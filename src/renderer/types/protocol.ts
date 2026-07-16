@@ -2,6 +2,8 @@ export type LogLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error' | 'assert
 
 export type DeviceSource = 'adb' | 'mock';
 
+export type ExportMode = 'all' | 'filtered';
+
 export interface LogEntry {
   seq: number;
   timestamp: number;
@@ -51,7 +53,8 @@ export type ClientMessage =
   | { type: 'add_bookmark'; deviceId: string; seq: number }
   | { type: 'remove_bookmark'; deviceId: string; seq: number }
   | { type: 'get_statistics'; deviceId: string }
-  | { type: 'refresh_devices' };
+  | { type: 'refresh_devices' }
+  | { type: 'export_logs'; deviceId: string; mode: ExportMode };
 
 export interface SearchOptions {
   regex: boolean;
@@ -67,13 +70,27 @@ export type ServerMessage =
   | { type: 'search_results'; deviceId: string; matches: number[] }
   | { type: 'recorder_status'; deviceId: string; enabled: boolean; path: string | null; warning: string | null }
   | { type: 'adb_status'; available: boolean; mode: 'bundled' | 'mock_fallback'; path: string | null; message: string }
+  | {
+      type: 'export_ready';
+      deviceId: string;
+      mode: ExportMode;
+      path: string;
+      lineCount: number;
+    }
   | { type: 'error'; message: string };
+
+export type ExportSaveResult = {
+  canceled: boolean;
+  path?: string;
+  error?: string;
+};
 
 declare global {
   interface Window {
     als: {
       version: string;
       getEngineUrl: () => Promise<string>;
+      exportSave: (tempPath: string, defaultName: string) => Promise<ExportSaveResult>;
     };
   }
 }
