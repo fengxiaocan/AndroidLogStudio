@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -98,6 +99,67 @@ async function createWindow() {
 }
 
 ipcMain.handle('engine:get-url', async () => engineUrl || engineReady);
+
+async function resolveAllowedExportTempPath(tempPath: string): Promise<string | null> {
+  // Resolve through realpath so symlink / ".." tricks cannot escape logs/exports.
+  const exportsDirLogical = path.resolve(process.cwd(), 'logs', 'exports');
+  try {
+    await fs.mkdir(exportsDirLogical, { recursive: true });
+    const exportsDir = await fs.realpath(exportsDirLogical);
+    const candidate = await fs.realpath(path.resolve(tempPath));
+    const underExports =
+      candidate === exportsDir || candidate.startsWith(exportsDir + path.sep);
+    // Only engine-minted export temps (*.log) are accepted.
+    if (!underExports || path.extname(candidate).toLowerCase() !== '.log') {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+ipcMain.handle(
+  'export:save',
+  async (
+    _event,
+    payload: { tempPath?: string; defaultName?: string },
+  ): Promise<{ canceled: boolean; path?: string; error?: string }> => {
+    const tempPath = payload?.tempPath;
+    const defaultName = payload?.defaultName || 'export.log';
+    if (!tempPath || typeof tempPath !== 'string') {
+      return { canceled: false, error: 'missing tempPath' };
+    }
+
+    const safeTempPath = await resolveAllowedExportTempPath(tempPath);
+    if (!safeTempPath) {
+      return { canceled: false, error: 'temp path not allowed' };
+    }
+
+    const result = await dialog.showSaveDialog({
+      defaultPath: defaultName,
+      filters: [
+        { name: 'Log files', extensions: ['log', 'txt'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+
+    if (result.canceled || !result.filePath) {
+      await fs.unlink(safeTempPath).catch(() => undefined);
+      return { canceled: true };
+    }
+
+    try {
+      await fs.copyFile(safeTempPath, result.filePath);
+      await fs.unlink(safeTempPath).catch(() => undefined);
+      return { canceled: false, path: result.filePath };
+    } catch (error) {
+      await fs.unlink(safeTempPath).catch(() => undefined);
+      const message = error instanceof Error ? error.message : String(error);
+      return { canceled: false, error: message };
+    }
+  },
+);
 
 app.whenReady().then(() => {
   startEngine();

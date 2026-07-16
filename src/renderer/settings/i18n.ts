@@ -16,6 +16,10 @@ type MessageKey =
   | 'pause'
   | 'resume'
   | 'refreshDevices'
+  | 'removeDevice'
+  | 'exportAll'
+  | 'exportFiltered'
+  | 'deviceDisconnected'
   | 'search'
   | 'package'
   | 'tag'
@@ -65,6 +69,10 @@ const en: Record<MessageKey, string> = {
   pause: 'Pause',
   resume: 'Resume',
   refreshDevices: 'Refresh Devices',
+  removeDevice: 'Remove device',
+  exportAll: 'Export all',
+  exportFiltered: 'Export filtered',
+  deviceDisconnected: 'Disconnected',
   search: 'Search',
   package: 'Package',
   tag: 'Tag',
@@ -115,6 +123,10 @@ const zh: Record<MessageKey, string> = {
   pause: '暂停',
   resume: '继续',
   refreshDevices: '刷新设备',
+  removeDevice: '移除设备',
+  exportAll: '导出全部',
+  exportFiltered: '导出过滤',
+  deviceDisconnected: '已断开',
   search: '搜索',
   package: '包名',
   tag: '标签',

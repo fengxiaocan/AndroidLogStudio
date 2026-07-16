@@ -154,6 +154,42 @@ describe('appStore per-device server messages', () => {
     expect(useAppStore.getState().logs).toEqual([]);
   });
 
+  it('device_list connected flip keeps logs for same active device', () => {
+    const { handleServerMessage } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA, deviceB] });
+    handleServerMessage({
+      type: 'new_logs',
+      deviceId: deviceA.deviceId,
+      logs: [logEntry(1)],
+    });
+
+    handleServerMessage({
+      type: 'device_list',
+      devices: [{ ...deviceA, connected: false }, deviceB],
+    });
+
+    expect(useAppStore.getState().activeDeviceId).toBe(deviceA.deviceId);
+    expect(useAppStore.getState().logs.map((l) => l.seq)).toEqual([1]);
+    expect(
+      useAppStore.getState().devices.find((d) => d.deviceId === deviceA.deviceId)?.connected,
+    ).toBe(false);
+  });
+
+  it('device_list removing active device switches and clears logs', () => {
+    const { handleServerMessage } = useAppStore.getState();
+    handleServerMessage({ type: 'device_list', devices: [deviceA, deviceB] });
+    handleServerMessage({
+      type: 'new_logs',
+      deviceId: deviceA.deviceId,
+      logs: [logEntry(1)],
+    });
+
+    handleServerMessage({ type: 'device_list', devices: [deviceB] });
+
+    expect(useAppStore.getState().activeDeviceId).toBe(deviceB.deviceId);
+    expect(useAppStore.getState().logs).toEqual([]);
+  });
+
   it('settings update columns colors rows and locale with persistence', () => {
     const { setColumnVisible, setLevelColor, setMaxVisibleRows, setLocale, resetSettings } =
       useAppStore.getState();

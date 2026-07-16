@@ -1,3 +1,4 @@
+use crate::device::ExportMode;
 use crate::device_manager::{AdbStatus, AdbStatusMode, DeviceManager, MOCK_DEVICE_ID};
 use crate::log_entry::{DeviceInfo, LogEntry, StatisticsSnapshot};
 use crate::recorder::RecorderStatus;
@@ -42,6 +43,9 @@ pub enum ClientMessage {
     DisconnectDevice {
         device_id: String,
     },
+    RemoveDevice {
+        device_id: String,
+    },
     SetFilter {
         device_id: String,
         query: String,
@@ -55,6 +59,10 @@ pub enum ClientMessage {
         device_id: String,
     },
     RefreshDevices,
+    ExportLogs {
+        device_id: String,
+        mode: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +106,12 @@ pub enum ServerMessage {
     },
     Error {
         message: String,
+    },
+    ExportReady {
+        device_id: String,
+        mode: String,
+        path: String,
+        line_count: usize,
     },
 }
 
@@ -162,6 +176,15 @@ async fn handle_socket(socket: WebSocket) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                if manager.poll_logcat_exits().await {
+                    manager.refresh_adb_status_message();
+                    if !send_server_message(&mut sender, &device_list_message(&manager)).await {
+                        break;
+                    }
+                    if !send_adb_status(&mut sender, manager.adb_status()).await {
+                        break;
+                    }
+                }
                 if manager.is_mock_fallback() {
                     if !send_mock_tick(&mut sender, &mut manager).await {
                         break;
@@ -228,10 +251,56 @@ async fn handle_client_text(
                 && send_server_message(sender, &device_list_message(manager)).await
                 && send_refresh_device_state(sender, manager).await
         }
-        Ok(
-            ClientMessage::ConnectDevice { device_id }
-            | ClientMessage::DisconnectDevice { device_id },
-        ) => validate_device(sender, manager, &device_id).await,
+        Ok(ClientMessage::ConnectDevice { device_id }) => {
+            if !manager.has_device(&device_id) {
+                return send_error(sender, format!("unknown device: {device_id}")).await;
+            }
+            send_visible_snapshot(sender, manager, &device_id).await
+                && send_statistics(sender, manager, &device_id).await
+                && send_recorder_status(sender, manager, &device_id).await
+        }
+        Ok(ClientMessage::DisconnectDevice { device_id }) => {
+            // Intentionally stub this iteration (spec): validate only.
+            validate_device(sender, manager, &device_id).await
+        }
+        Ok(ClientMessage::RemoveDevice { device_id }) => {
+            match manager.remove_device(&device_id) {
+                Ok(()) => send_server_message(sender, &device_list_message(manager)).await,
+                Err(error) => send_error(sender, error.to_string()).await,
+            }
+        }
+        Ok(ClientMessage::ExportLogs { device_id, mode }) => {
+            let export_mode = match mode.as_str() {
+                "all" => ExportMode::All,
+                "filtered" => ExportMode::Filtered,
+                other => {
+                    return send_error(
+                        sender,
+                        format!("invalid export mode: {other} (expected all|filtered)"),
+                    )
+                    .await;
+                }
+            };
+            match manager.export_logs(&device_id, export_mode) {
+                Ok(result) => {
+                    let mode_label = match result.mode {
+                        ExportMode::All => "all",
+                        ExportMode::Filtered => "filtered",
+                    };
+                    send_server_message(
+                        sender,
+                        &ServerMessage::ExportReady {
+                            device_id,
+                            mode: mode_label.to_string(),
+                            path: result.path.display().to_string(),
+                            line_count: result.line_count,
+                        },
+                    )
+                    .await
+                }
+                Err(error) => send_error(sender, error.to_string()).await,
+            }
+        }
         Err(error) => send_error(sender, format!("invalid client message: {error}")).await,
     }
 }
@@ -575,6 +644,49 @@ mod tests {
         .expect("refresh_devices should deserialize");
 
         assert!(matches!(message, ClientMessage::RefreshDevices));
+    }
+
+    #[test]
+    fn remove_device_message_deserializes() {
+        let message = serde_json::from_value::<ClientMessage>(json!({
+            "type": "remove_device",
+            "deviceId": "serial-a"
+        }))
+        .expect("remove_device should deserialize");
+        assert!(matches!(
+            message,
+            ClientMessage::RemoveDevice { device_id } if device_id == "serial-a"
+        ));
+    }
+
+    #[test]
+    fn export_logs_message_deserializes() {
+        let message = serde_json::from_value::<ClientMessage>(json!({
+            "type": "export_logs",
+            "deviceId": "serial-a",
+            "mode": "filtered"
+        }))
+        .expect("export_logs");
+        assert!(matches!(
+            message,
+            ClientMessage::ExportLogs { device_id, mode }
+                if device_id == "serial-a" && mode == "filtered"
+        ));
+    }
+
+    #[test]
+    fn export_ready_message_serializes_camel_case() {
+        let payload = serde_json::to_value(ServerMessage::ExportReady {
+            device_id: "serial-a".into(),
+            mode: "all".into(),
+            path: "/tmp/x.log".into(),
+            line_count: 3,
+        })
+        .unwrap();
+        assert_eq!(payload["type"], "export_ready");
+        assert_eq!(payload["deviceId"], "serial-a");
+        assert_eq!(payload["lineCount"], 3);
+        assert_eq!(payload["path"], "/tmp/x.log");
     }
 
     #[test]

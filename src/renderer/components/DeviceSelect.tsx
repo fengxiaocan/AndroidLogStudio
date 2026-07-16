@@ -35,7 +35,10 @@ export function DeviceSelect({ devices, activeDeviceId, onChange, locale }: Devi
       >
         {devices.map((device) => (
           <option key={device.deviceId} value={device.deviceId}>
-            {device.deviceName} · {device.deviceId} ({device.source.toUpperCase()})
+            {device.deviceName} · {device.deviceId}
+            {device.connected
+              ? ` (${device.source.toUpperCase()})`
+              : ` (${t(locale, 'deviceDisconnected')})`}
           </option>
         ))}
       </select>
