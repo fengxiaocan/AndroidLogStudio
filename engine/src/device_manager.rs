@@ -266,6 +266,12 @@ impl DeviceManager {
         };
     }
 
+    /// Stub to satisfy websocket after merge of pid cache work.
+    /// Full integration (per-context cache + adb ps) can be added later.
+    pub async fn refresh_pid_caches_if_needed(&mut self) {
+        // TODO
+    }
+
     pub async fn refresh(&mut self, project_root: &std::path::Path) {
         let adb_path = resolve_adb_path(project_root).adb;
         let adb_path_string = adb_path.display().to_string();
