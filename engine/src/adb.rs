@@ -79,8 +79,47 @@ pub fn logcat_command(adb_path: &Path, serial: &str) -> Command {
         .arg(serial)
         .arg("logcat")
         .arg("-v")
-        .arg("threadtime");
+        .arg("threadtime")
+        // -T 1 streams from the latest line instead of dumping the entire
+        // device ring buffer first (which floods the UI with old logs).
+        .arg("-T")
+        .arg("1");
     command
+}
+
+/// Fetch PID → process/package names for package enrichment (Android Studio style).
+pub async fn list_process_packages(adb_path: &Path, serial: &str) -> anyhow::Result<String> {
+    // Prefer modern toybox columns; fall back to plain `ps -A`.
+    let primary = Command::new(adb_path)
+        .arg("-s")
+        .arg(serial)
+        .arg("shell")
+        .arg("ps")
+        .arg("-A")
+        .arg("-o")
+        .arg("PID,NAME")
+        .output()
+        .await?;
+
+    if primary.status.success() {
+        let stdout = String::from_utf8_lossy(&primary.stdout).into_owned();
+        if stdout.lines().count() > 1 {
+            return Ok(stdout);
+        }
+    }
+
+    let fallback = Command::new(adb_path)
+        .arg("-s")
+        .arg(serial)
+        .arg("shell")
+        .arg("ps")
+        .arg("-A")
+        .output()
+        .await?;
+    if !fallback.status.success() {
+        anyhow::bail!("adb shell ps failed with {}", fallback.status);
+    }
+    Ok(String::from_utf8_lossy(&fallback.stdout).into_owned())
 }
 
 #[cfg(test)]
@@ -146,5 +185,30 @@ OK1 device model:Online_Device\n";
 
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].display_name, "abc123");
+    }
+
+    #[test]
+    fn logcat_command_starts_from_latest_lines_only() {
+        let command = logcat_command(Path::new("/tmp/adb"), "serial-1");
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        // -T 1: print the most recent line, then keep streaming new ones.
+        // Without -T, adb dumps the entire ring buffer first (old flood).
+        assert_eq!(
+            args,
+            vec![
+                "-s",
+                "serial-1",
+                "logcat",
+                "-v",
+                "threadtime",
+                "-T",
+                "1",
+            ]
+        );
     }
 }

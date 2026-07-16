@@ -80,9 +80,13 @@ async function createWindow() {
     width: 1400,
     height: 900,
     webPreferences: {
-      preload: path.join(mainDir, 'preload.js'),
+      // Preload must be CJS (.cjs). With package.json "type":"module", a
+      // .js preload is treated as ESM and fails silently under sandbox,
+      // leaving window.als undefined in the renderer.
+      preload: path.join(mainDir, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
     },
   });
 

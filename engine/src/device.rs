@@ -1,6 +1,7 @@
 use crate::filter::FilterQuery;
 use crate::log_entry::{LogEntry, StatisticsSnapshot};
 use crate::parser::parse_threadtime_line;
+use crate::pid_cache::PidCache;
 use crate::recorder::{Recorder, RecorderStatus};
 use crate::ring_buffer::RingBuffer;
 use crate::statistics::Statistics;
@@ -21,6 +22,7 @@ pub struct DeviceContext {
     statistics: Statistics,
     recorder: Recorder,
     recorder_status: RecorderStatus,
+    pid_cache: PidCache,
 }
 
 impl DeviceContext {
@@ -43,7 +45,16 @@ impl DeviceContext {
                 path: None,
                 warning: None,
             },
+            pid_cache: PidCache::default(),
         }
+    }
+
+    pub fn pid_cache_mut(&mut self) -> &mut PidCache {
+        &mut self.pid_cache
+    }
+
+    pub fn pid_cache_needs_refresh(&self) -> bool {
+        self.pid_cache.needs_refresh()
     }
 
     pub fn set_filter(&mut self, query: FilterQuery) {
@@ -63,6 +74,11 @@ impl DeviceContext {
     pub fn ingest_line(&mut self, raw_line: &str) -> Option<LogEntry> {
         self.seq += 1;
         let mut entry = parse_threadtime_line(self.seq, raw_line)?;
+        if entry.package_name.is_none() && entry.pid != 0 {
+            if let Some(package) = self.pid_cache.resolve(entry.pid) {
+                entry.package_name = Some(package.to_string());
+            }
+        }
         entry.hidden = !self.filter.matches(&entry);
         self.statistics.observe(&entry);
         self.recorder_status =
@@ -188,5 +204,32 @@ mod tests {
         assert_eq!(snapshot.logs.len(), 1);
         assert_eq!(snapshot.logs[0].message, "error");
         assert_eq!(snapshot.stats.hidden, 1);
+    }
+
+    #[test]
+    fn enriches_package_name_from_pid_cache() {
+        let mut device = new_test_device(10);
+        device.pid_cache_mut().insert(1234, "com.example.app");
+        let entry = device
+            .ingest_line("07-04 12:34:56.789  1234  5678 I Tag: hello")
+            .expect("line parses");
+        assert_eq!(entry.package_name.as_deref(), Some("com.example.app"));
+    }
+
+    #[test]
+    fn package_filter_matches_enriched_package_name() {
+        let mut device = new_test_device(10);
+        device.pid_cache_mut().insert(1234, "com.example.app");
+        device.pid_cache_mut().insert(9999, "com.other");
+        device.set_filter(FilterQuery::parse("package:example"));
+        device.ingest_line("07-04 12:34:56.789  1234  5678 I Tag: keep");
+        device.ingest_line("07-04 12:34:57.789  9999  5678 I Tag: drop");
+        let snapshot = device.latest_visible_snapshot(10);
+        assert_eq!(snapshot.logs.len(), 1);
+        assert_eq!(snapshot.logs[0].message, "keep");
+        assert_eq!(
+            snapshot.logs[0].package_name.as_deref(),
+            Some("com.example.app")
+        );
     }
 }

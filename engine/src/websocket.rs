@@ -14,7 +14,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time;
 
-const MOCK_LOG_LINE: &str = "07-04 12:34:56.789  1234  5678 I ActivityManager: Mock log line";
+const MOCK_LOG_LINE: &str =
+    "07-04 12:34:56.789  1234  5678 I ActivityManager: Mock log line from com.android.systemui";
 const SNAPSHOT_LIMIT: usize = 5_000;
 const ALLOWED_ORIGINS: &[&str] = &["http://127.0.0.1:5173", "http://localhost:5173", "file://"];
 
@@ -281,6 +282,8 @@ async fn send_pending_adb_logs(
     sender: &mut SplitSink<WebSocket, Message>,
     manager: &mut DeviceManager,
 ) -> bool {
+    manager.refresh_pid_caches_if_needed().await;
+
     for (device_id, entry) in manager.drain_pending_logs() {
         for message in pending_adb_log_messages(&device_id, entry) {
             match message {

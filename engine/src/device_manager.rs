@@ -1,4 +1,4 @@
-use crate::adb::{list_devices, logcat_command, resolve_adb_path, AdbDevice};
+use crate::adb::{list_devices, list_process_packages, logcat_command, resolve_adb_path, AdbDevice};
 use crate::device::{DeviceContext, DeviceSnapshot};
 use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry};
@@ -297,9 +297,13 @@ impl DeviceManager {
     }
 
     pub fn ingest_mock_line(&mut self, raw_line: &str) -> Option<LogEntry> {
-        self.contexts
-            .get_mut(MOCK_DEVICE_ID)
-            .and_then(|context| context.ingest_line(raw_line))
+        let context = self.contexts.get_mut(MOCK_DEVICE_ID)?;
+        // Seed a stable mapping so package filter demos work offline.
+        if context.pid_cache_needs_refresh() {
+            context.pid_cache_mut().insert(1234, "com.android.systemui");
+            context.pid_cache_mut().mark_refreshed();
+        }
+        context.ingest_line(raw_line)
     }
 
     pub fn drain_pending_logs(&mut self) -> Vec<(String, LogEntry)> {
@@ -317,6 +321,47 @@ impl DeviceManager {
         }
 
         entries
+    }
+
+    /// Refresh PID→package maps for ADB devices whose cache is stale.
+    /// Called on the WS tick so package filters / columns stay useful.
+    pub async fn refresh_pid_caches_if_needed(&mut self) {
+        let adb_path = match self.adb_status.path.as_ref() {
+            Some(path) => PathBuf::from(path),
+            None => return,
+        };
+        if !adb_path.exists() {
+            return;
+        }
+
+        let device_ids: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|device| device.source == DeviceSource::Adb)
+            .filter(|device| {
+                self.contexts
+                    .get(&device.device_id)
+                    .map(|ctx| ctx.pid_cache_needs_refresh())
+                    .unwrap_or(false)
+            })
+            .map(|device| device.device_id.clone())
+            .collect();
+
+        for device_id in device_ids {
+            match list_process_packages(&adb_path, &device_id).await {
+                Ok(output) => {
+                    if let Some(context) = self.contexts.get_mut(&device_id) {
+                        context.pid_cache_mut().apply_ps_output(&output);
+                    }
+                }
+                Err(_) => {
+                    // Soft-fail: package column stays empty until next refresh.
+                    if let Some(context) = self.contexts.get_mut(&device_id) {
+                        context.pid_cache_mut().mark_refreshed();
+                    }
+                }
+            }
+        }
     }
 
     pub fn set_filter(&mut self, device_id: &str, query: &str) -> anyhow::Result<()> {
