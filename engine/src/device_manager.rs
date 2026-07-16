@@ -1,5 +1,5 @@
 use crate::adb::{list_devices, logcat_command, resolve_adb_path, AdbDevice};
-use crate::device::{DeviceContext, DeviceSnapshot};
+use crate::device::{DeviceContext, DeviceSnapshot, ExportMode};
 use crate::filter::FilterQuery;
 use crate::log_entry::{DeviceInfo, DeviceSource, LogEntry};
 use crate::recorder::{Recorder, RecorderConfig};
@@ -10,6 +10,13 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::mpsc;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedExportResult {
+    pub path: PathBuf,
+    pub line_count: usize,
+    pub mode: ExportMode,
+}
 
 #[allow(dead_code)]
 pub const MOCK_DEVICE_ID: &str = "mock-device";
@@ -609,6 +616,50 @@ impl DeviceManager {
             .ok_or_else(|| anyhow::anyhow!("unknown device: {device_id}"))?;
         Ok(context.search_visible_sequences(query))
     }
+
+    pub fn export_logs(
+        &self,
+        device_id: &str,
+        mode: ExportMode,
+    ) -> anyhow::Result<ManagedExportResult> {
+        let context = self
+            .contexts
+            .get(device_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown device: {device_id}"))?;
+
+        let exports_dir = PathBuf::from("logs").join("exports");
+        std::fs::create_dir_all(&exports_dir)?;
+
+        let safe_id: String = device_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let mode_label = match mode {
+            ExportMode::All => "all",
+            ExportMode::Filtered => "filtered",
+        };
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let file_name = format!("{safe_id}-{mode_label}-{millis}.log");
+        let path = exports_dir.join(file_name);
+
+        let device_result = context.export_logs(mode, &path)?;
+        let absolute = std::fs::canonicalize(&path).unwrap_or(path);
+
+        Ok(ManagedExportResult {
+            path: absolute,
+            line_count: device_result.line_count,
+            mode,
+        })
+    }
 }
 
 impl Drop for DeviceManager {
@@ -990,5 +1041,41 @@ mod tests {
             .set_filter("missing", "level:error")
             .expect_err("unknown device should error");
         assert!(error.to_string().contains("unknown device: missing"));
+    }
+
+    #[test]
+    fn manager_export_logs_unknown_device_errors() {
+        use crate::device::ExportMode;
+
+        let manager = DeviceManager::mock_fallback("test");
+        let err = manager
+            .export_logs("missing", ExportMode::All)
+            .expect_err("unknown");
+        assert!(err.to_string().contains("unknown device"));
+    }
+
+    #[test]
+    fn manager_export_logs_writes_under_exports_dir() {
+        use crate::device::ExportMode;
+
+        let mut manager = DeviceManager::mock_fallback("test");
+        assert!(manager
+            .ingest_mock_line("07-16 12:00:00.000  1  1 I Tag: line")
+            .is_some());
+
+        let result = manager
+            .export_logs(MOCK_DEVICE_ID, ExportMode::All)
+            .expect("export");
+        assert_eq!(result.line_count, 1);
+        assert!(result.path.exists());
+        assert!(
+            result.path.to_string_lossy().contains("exports"),
+            "path should be under exports: {:?}",
+            result.path
+        );
+        let text = std::fs::read_to_string(&result.path).unwrap();
+        assert!(text.contains("Tag: line"));
+        // cleanup temp file
+        let _ = std::fs::remove_file(&result.path);
     }
 }
