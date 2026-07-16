@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:electron": "npm run build && electron .",
-    "build": "npm run engine:build && tsc --noEmit && tsc -p tsconfig.main.json && vite build",
+    "build": "npm run engine:build && tsc --noEmit && tsc -p tsconfig.main.json && cp src/main/preload.cjs dist/main/preload.cjs && vite build",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "engine:build": "cargo build -p als-engine",
