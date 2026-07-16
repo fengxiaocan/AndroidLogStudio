@@ -33,6 +33,7 @@ interface AppState {
   packageFilter: string;
   tagFilter: string;
   selectedLevels: FilterLevel[];
+  caseInsensitive: boolean;
   searchQuery: string;
   searchMatches: number[];
   stats: StatisticsSnapshot;
@@ -46,6 +47,7 @@ interface AppState {
   setPackageFilter: (packageFilter: string) => void;
   setTagFilter: (tagFilter: string) => void;
   setSelectedLevels: (selectedLevels: FilterLevel[]) => void;
+  setCaseInsensitive: (caseInsensitive: boolean) => void;
   toggleLevel: (level: FilterLevel) => void;
   setSearchQuery: (searchQuery: string) => void;
   setActiveDeviceId: (deviceId: string) => void;
@@ -104,6 +106,7 @@ export const useAppStore = create<AppState>((set) => ({
   packageFilter: '',
   tagFilter: '',
   selectedLevels: [...DEFAULT_SELECTED_LEVELS],
+  caseInsensitive: false,
   searchQuery: '',
   searchMatches: [],
   stats: emptyStats,
@@ -117,6 +120,7 @@ export const useAppStore = create<AppState>((set) => ({
   setPackageFilter: (packageFilter) => set({ packageFilter }),
   setTagFilter: (tagFilter) => set({ tagFilter }),
   setSelectedLevels: (selectedLevels) => set({ selectedLevels }),
+  setCaseInsensitive: (caseInsensitive: boolean) => set({ caseInsensitive }),
   toggleLevel: (level) =>
     set((state) => {
       const has = state.selectedLevels.includes(level);

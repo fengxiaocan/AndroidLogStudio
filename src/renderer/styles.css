@@ -231,6 +231,32 @@ input {
   outline-offset: 2px;
 }
 
+.case-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 2px;
+  font-size: 12px;
+  color: #8b949e;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.case-toggle input[type="checkbox"] {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: #7ee787;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.case-toggle:hover {
+  color: #e6edf3;
+}
+
 .refresh-devices {
   min-height: 36px;
   border: 1px solid #263140;

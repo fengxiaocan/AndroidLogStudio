@@ -23,6 +23,8 @@ type MessageKey =
   | 'search'
   | 'package'
   | 'tag'
+  | 'tagPlaceholder'
+  | 'caseInsensitive'
   | 'level'
   | 'connected'
   | 'disconnected'
@@ -76,6 +78,8 @@ const en: Record<MessageKey, string> = {
   search: 'Search',
   package: 'Package',
   tag: 'Tag',
+  tagPlaceholder: 'ActivityManager | Choreographer',
+  caseInsensitive: 'Ignore case',
   level: 'Level',
   connected: 'Connected',
   disconnected: 'Disconnected',
@@ -130,6 +134,8 @@ const zh: Record<MessageKey, string> = {
   search: '搜索',
   package: '包名',
   tag: '标签',
+  tagPlaceholder: 'ActivityManager | Choreographer | WindowManager',
+  caseInsensitive: '忽略大小写',
   level: '等级',
   connected: '已连接',
   disconnected: '未连接',

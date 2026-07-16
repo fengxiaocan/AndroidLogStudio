@@ -22,6 +22,7 @@ export function App() {
   const packageFilter = useAppStore((state) => state.packageFilter);
   const tagFilter = useAppStore((state) => state.tagFilter);
   const selectedLevels = useAppStore((state) => state.selectedLevels);
+  const caseInsensitive = useAppStore((state) => state.caseInsensitive);
   const searchQuery = useAppStore((state) => state.searchQuery);
   const stats = useAppStore((state) => state.stats);
   const paused = useAppStore((state) => state.paused);
@@ -32,6 +33,7 @@ export function App() {
   const setPackageFilter = useAppStore((state) => state.setPackageFilter);
   const setTagFilter = useAppStore((state) => state.setTagFilter);
   const toggleLevel = useAppStore((state) => state.toggleLevel);
+  const setCaseInsensitive = useAppStore((state) => state.setCaseInsensitive);
   const setSearchQuery = useAppStore((state) => state.setSearchQuery);
   const setActiveDeviceId = useAppStore((state) => state.setActiveDeviceId);
   const clearLogs = useAppStore((state) => state.clearLogs);
@@ -57,12 +59,12 @@ export function App() {
   const canExport = Boolean(activeDeviceId && connected && !exportBusy);
 
   const sendFilter = useCallback(
-    (pkg: string, tag: string, levels: ReadonlyArray<FilterLevel>) => {
+    (pkg: string, tag: string, levels: ReadonlyArray<FilterLevel>, ci: boolean = caseInsensitive) => {
       if (!activeDeviceId) return;
-      const query = composeFilterQuery(pkg, tag, levels);
+      const query = composeFilterQuery(pkg, tag, levels, ci);
       clientRef.current?.send({ type: 'set_filter', deviceId: activeDeviceId, query });
     },
-    [activeDeviceId],
+    [activeDeviceId, caseInsensitive],
   );
 
   const onServerMessage = useCallback(
@@ -101,24 +103,24 @@ export function App() {
   useEffect(() => {
     if (!activeDeviceId || !connected) return;
     clientRef.current?.send({ type: 'connect_device', deviceId: activeDeviceId });
-    sendFilter(packageFilter, tagFilter, selectedLevels);
+    sendFilter(packageFilter, tagFilter, selectedLevels, caseInsensitive);
     // intentional: not package/tag/levels — those have their own handlers
-  }, [activeDeviceId, connected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeDeviceId, connected, caseInsensitive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePackageChange = useCallback(
     (next: string) => {
       setPackageFilter(next);
-      sendFilter(next, tagFilter, selectedLevels);
+      sendFilter(next, tagFilter, selectedLevels, caseInsensitive);
     },
-    [sendFilter, setPackageFilter, tagFilter, selectedLevels],
+    [sendFilter, setPackageFilter, tagFilter, selectedLevels, caseInsensitive],
   );
 
   const handleTagChange = useCallback(
     (next: string) => {
       setTagFilter(next);
-      sendFilter(packageFilter, next, selectedLevels);
+      sendFilter(packageFilter, next, selectedLevels, caseInsensitive);
     },
-    [sendFilter, setTagFilter, packageFilter, selectedLevels],
+    [sendFilter, setTagFilter, packageFilter, selectedLevels, caseInsensitive],
   );
 
   const handleLevelToggle = useCallback(
@@ -128,9 +130,9 @@ export function App() {
         ? selectedLevels.filter((item) => item !== level)
         : [...selectedLevels, level];
       toggleLevel(level);
-      sendFilter(packageFilter, tagFilter, nextLevels);
+      sendFilter(packageFilter, tagFilter, nextLevels, caseInsensitive);
     },
-    [sendFilter, toggleLevel, packageFilter, tagFilter, selectedLevels],
+    [sendFilter, toggleLevel, packageFilter, tagFilter, selectedLevels, caseInsensitive],
   );
 
   const handleSearchChange = useCallback(
@@ -283,9 +285,11 @@ export function App() {
           packageFilter={packageFilter}
           tagFilter={tagFilter}
           selectedLevels={selectedLevels}
+          caseInsensitive={caseInsensitive}
           onPackageChange={handlePackageChange}
           onTagChange={handleTagChange}
           onLevelToggle={handleLevelToggle}
+          onCaseInsensitiveChange={setCaseInsensitive}
           locale={locale}
         />
         <div className="query-region__actions">

@@ -26,18 +26,40 @@ export function composeFilterQuery(
   packageFilter: string,
   tagFilter: string,
   selectedLevels: ReadonlyArray<Exclude<LogLevel, 'unknown'>>,
+  caseInsensitive: boolean = false,
 ): string {
   const parts: string[] = [];
   const pkg = packageFilter.trim();
   const tag = tagFilter.trim();
-  if (pkg) parts.push(`package:${pkg}`);
-  if (tag) parts.push(`tag:${tag}`);
+  if (pkg) {
+    // Support multi-package OR with |
+    const pkgParts = pkg
+      .split('|')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const p of pkgParts) {
+      parts.push(`package:${p}`);
+    }
+  }
+  if (tag) {
+    // Support multi-tag OR with | , e.g. "tag1 | tag2 | tag3"
+    const tagParts = tag
+      .split('|')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const p of tagParts) {
+      parts.push(`tag:${p}`);
+    }
+  }
   if (selectedLevels.length === 0) {
     parts.push('level:none');
   } else if (selectedLevels.length < FILTER_LEVELS.length) {
     for (const level of selectedLevels) {
       parts.push(`level:${level}`);
     }
+  }
+  if (caseInsensitive) {
+    parts.push('case:insensitive');
   }
   return parts.join(' ');
 }
@@ -46,9 +68,11 @@ interface QueryBarProps {
   packageFilter: string;
   tagFilter: string;
   selectedLevels: ReadonlyArray<Exclude<LogLevel, 'unknown'>>;
+  caseInsensitive: boolean;
   onPackageChange: (value: string) => void;
   onTagChange: (value: string) => void;
   onLevelToggle: (level: Exclude<LogLevel, 'unknown'>) => void;
+  onCaseInsensitiveChange: (value: boolean) => void;
   locale: Locale;
 }
 
@@ -56,9 +80,11 @@ export function QueryBar({
   packageFilter,
   tagFilter,
   selectedLevels,
+  caseInsensitive,
   onPackageChange,
   onTagChange,
   onLevelToggle,
+  onCaseInsensitiveChange,
   locale,
 }: QueryBarProps) {
   return (
@@ -79,7 +105,7 @@ export function QueryBar({
           className="field__input"
           value={tagFilter}
           onChange={(event) => onTagChange(event.currentTarget.value)}
-          placeholder="ActivityManager"
+          placeholder={t(locale, 'tagPlaceholder')}
           aria-label={t(locale, 'tag')}
         />
       </label>
@@ -100,6 +126,15 @@ export function QueryBar({
               </label>
             );
           })}
+
+          <label className="case-toggle">
+            <input
+              type="checkbox"
+              checked={caseInsensitive}
+              onChange={(event) => onCaseInsensitiveChange(event.currentTarget.checked)}
+            />
+            <span>{t(locale, 'caseInsensitive')}</span>
+          </label>
         </div>
       </fieldset>
     </div>
