@@ -52,7 +52,10 @@ pub struct DeviceManager {
 #[allow(dead_code)]
 impl DeviceManager {
     pub fn mock_fallback(message: impl Into<String>) -> Self {
-        Self::mock_fallback_with_log_root(message, PathBuf::from("logs"))
+        let log_root = std::env::var("ALS_LOG_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("logs"));
+        Self::mock_fallback_with_log_root(message, log_root)
     }
 
     fn mock_fallback_with_log_root(message: impl Into<String>, log_root: PathBuf) -> Self {
@@ -96,8 +99,55 @@ impl DeviceManager {
         }
     }
 
+    /// Bundled adb is present but there are no online devices (or a soft error).
+    /// Keeps an empty device list — no synthetic Mock Device / mock log spam.
+    fn empty_adb_with_log_root(
+        path: Option<String>,
+        message: impl Into<String>,
+        log_root: PathBuf,
+    ) -> Self {
+        let _ = log_root; // reserved for future empty-state recorder path
+        let available = path.is_some();
+        Self {
+            adb_status: AdbStatus {
+                available,
+                mode: AdbStatusMode::Bundled,
+                path,
+                message: message.into(),
+            },
+            devices: Vec::new(),
+            contexts: HashMap::new(),
+            logcat_children: HashMap::new(),
+            log_receiver: None,
+        }
+    }
+
+    /// Whether the engine may invent a Mock Device when ADB is unusable.
+    /// Off by default so packaged installs don't spam fake log lines.
+    /// Enable with `ALS_ALLOW_MOCK_FALLBACK=1` for demos / offline UI work.
+    fn mock_fallback_allowed() -> bool {
+        matches!(
+            std::env::var("ALS_ALLOW_MOCK_FALLBACK").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        )
+    }
+
+    fn fallback_for_unavailable_adb(
+        path: Option<String>,
+        message: String,
+        log_root: PathBuf,
+    ) -> Self {
+        if Self::mock_fallback_allowed() {
+            return Self::mock_fallback_with_log_root(message, log_root);
+        }
+        Self::empty_adb_with_log_root(path, message, log_root)
+    }
+
     pub fn from_adb_devices(path: String, adb_devices: Vec<AdbDevice>) -> Self {
-        Self::from_adb_devices_with_log_root(path, adb_devices, PathBuf::from("logs"))
+        let log_root = std::env::var("ALS_LOG_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("logs"));
+        Self::from_adb_devices_with_log_root(path, adb_devices, log_root)
     }
 
     pub fn from_scan_result(
@@ -105,12 +155,24 @@ impl DeviceManager {
         devices: Vec<AdbDevice>,
         error: Option<String>,
     ) -> Self {
+        let log_root = std::env::var("ALS_LOG_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("logs"));
+
         if let Some(error) = error {
-            return Self::mock_fallback(format!("ADB: {error}, using mock device"));
+            return Self::fallback_for_unavailable_adb(
+                path,
+                format!("ADB: {error}"),
+                log_root,
+            );
         }
 
         if devices.is_empty() {
-            return Self::mock_fallback("ADB: no online devices, using mock device");
+            return Self::fallback_for_unavailable_adb(
+                path,
+                "ADB: no online devices".to_string(),
+                log_root,
+            );
         }
 
         Self::from_adb_devices(
@@ -156,8 +218,19 @@ impl DeviceManager {
                     path,
                     message: format!("ADB: {error}"),
                 };
-            } else {
+            } else if Self::mock_fallback_allowed() {
                 self.switch_to_mock_fallback(format!("ADB: {error}, using mock device"));
+            } else {
+                // Stay empty — report the error, no synthetic mock device.
+                self.stop_logcat_children();
+                self.devices.clear();
+                self.contexts.clear();
+                self.adb_status = AdbStatus {
+                    available: path.is_some(),
+                    mode: AdbStatusMode::Bundled,
+                    path,
+                    message: format!("ADB: {error}"),
+                };
             }
             return;
         }
@@ -182,8 +255,19 @@ impl DeviceManager {
                     path: Some(path_string),
                     message: "ADB: no online devices".to_string(),
                 };
-            } else {
+            } else if Self::mock_fallback_allowed() {
                 self.switch_to_mock_fallback("ADB: no online devices, using mock device");
+            } else {
+                self.stop_logcat_children();
+                self.devices.clear();
+                self.contexts.clear();
+                let path_string = path.clone();
+                self.adb_status = AdbStatus {
+                    available: path_string.is_some(),
+                    mode: AdbStatusMode::Bundled,
+                    path: path_string,
+                    message: "ADB: no online devices".to_string(),
+                };
             }
             return;
         }
@@ -196,7 +280,9 @@ impl DeviceManager {
         }
 
         let path_string = path.unwrap_or_else(|| "libs/<platform>/adb".to_string());
-        let log_root = PathBuf::from("logs");
+        let log_root = std::env::var("ALS_LOG_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("logs"));
         let scanned: HashMap<String, AdbDevice> = devices
             .into_iter()
             .map(|device| (device.serial.clone(), device))
@@ -313,8 +399,12 @@ impl DeviceManager {
     }
 
     pub async fn refresh(&mut self, project_root: &std::path::Path) {
-        let adb_path = resolve_adb_path(project_root).adb;
+        let base = std::env::var("ALS_RESOURCES_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| project_root.to_path_buf());
+        let adb_path = resolve_adb_path(&base).adb;
         let adb_path_string = adb_path.display().to_string();
+
         if !adb_path.exists() {
             self.merge_scan_result(
                 Some(adb_path_string.clone()),
@@ -340,25 +430,44 @@ impl DeviceManager {
     }
 
     pub async fn start(project_root: &std::path::Path) -> Self {
-        let adb_path = resolve_adb_path(project_root).adb;
+        // Prefer explicit resources path (set by Electron in packaged builds) so that
+        // bundled engine + libs/adb are found reliably even if cwd differs.
+        let base = std::env::var("ALS_RESOURCES_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| project_root.to_path_buf());
+
+        let adb_path = resolve_adb_path(&base).adb;
         let adb_path_string = adb_path.display().to_string();
 
+        let log_root = std::env::var("ALS_LOG_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("logs"));
+
         if !adb_path.exists() {
-            return Self::mock_fallback(format!(
-                "ADB: missing {adb_path_string}, using mock device"
-            ));
+            return Self::fallback_for_unavailable_adb(
+                None,
+                format!("ADB: missing {adb_path_string}"),
+                log_root,
+            );
         }
 
         match list_devices(&adb_path).await {
-            Ok(devices) if devices.is_empty() => {
-                Self::mock_fallback("ADB: no online devices, using mock device")
-            }
+            Ok(devices) if devices.is_empty() => Self::fallback_for_unavailable_adb(
+                Some(adb_path_string),
+                "ADB: no online devices".to_string(),
+                log_root,
+            ),
             Ok(devices) => {
-                let mut manager = Self::from_adb_devices(adb_path_string, devices);
+                let mut manager =
+                    Self::from_adb_devices_with_log_root(adb_path_string, devices, log_root);
                 manager.start_logcat_processes(&adb_path).await;
                 manager
             }
-            Err(error) => Self::mock_fallback(format!("ADB: {error}, using mock device")),
+            Err(error) => Self::fallback_for_unavailable_adb(
+                Some(adb_path_string),
+                format!("ADB: {error}"),
+                log_root,
+            ),
         }
     }
 
@@ -392,11 +501,20 @@ impl DeviceManager {
                     self.logcat_children.insert(device_id, child);
                 }
                 Err(error) => {
-                    self.switch_to_mock_fallback_async(format!(
-                        "ADB: failed to start logcat: {error}, using mock device"
-                    ))
-                    .await;
-                    return;
+                    // Mark this device offline; only invent mock if explicitly allowed.
+                    self.mark_disconnected(&device_id);
+                    self.adb_status.message =
+                        format!("ADB: failed to start logcat for {device_id}: {error}");
+                    if Self::mock_fallback_allowed() && !self.devices.iter().any(|d| {
+                        d.source == DeviceSource::Adb && d.connected
+                    }) {
+                        self.switch_to_mock_fallback_async(format!(
+                            "ADB: failed to start logcat: {error}, using mock device"
+                        ))
+                        .await;
+                        return;
+                    }
+                    continue;
                 }
             }
         }
@@ -835,24 +953,28 @@ mod tests {
     }
 
     #[test]
-    fn no_adb_devices_uses_mock_fallback_status() {
+    fn no_adb_devices_stays_empty_without_mock_by_default() {
         let manager =
             DeviceManager::from_scan_result(Some("libs/linux/adb".to_string()), Vec::new(), None);
 
-        assert_eq!(manager.adb_status().available, false);
-        assert_eq!(manager.device_list()[0].source, DeviceSource::Mock);
+        assert_eq!(manager.adb_status().available, true);
+        assert_eq!(manager.adb_status().mode, AdbStatusMode::Bundled);
+        assert!(manager.device_list().is_empty());
+        assert!(!manager.is_mock_fallback());
         assert!(manager.adb_status().message.contains("no online devices"));
     }
 
     #[test]
-    fn adb_scan_error_uses_mock_fallback_status() {
+    fn adb_scan_error_stays_empty_without_mock_by_default() {
         let manager = DeviceManager::from_scan_result(
             Some("libs/linux/adb".to_string()),
             Vec::new(),
             Some("permission denied".to_string()),
         );
 
-        assert_eq!(manager.adb_status().available, false);
+        assert_eq!(manager.adb_status().available, true);
+        assert!(manager.device_list().is_empty());
+        assert!(!manager.is_mock_fallback());
         assert!(manager.adb_status().message.contains("permission denied"));
     }
 
@@ -1012,7 +1134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logcat_spawn_failure_replaces_adb_state_with_mock_fallback() {
+    async fn logcat_spawn_failure_marks_device_disconnected_without_mock() {
         let mut manager = DeviceManager::from_adb_devices(
             "libs/linux/adb".to_string(),
             vec![AdbDevice {
@@ -1025,17 +1147,16 @@ mod tests {
             .start_logcat_processes(&PathBuf::from("/definitely/missing/adb"))
             .await;
 
-        assert_eq!(manager.adb_status().available, false);
-        assert_eq!(manager.adb_status().mode, AdbStatusMode::MockFallback);
+        assert_eq!(manager.adb_status().mode, AdbStatusMode::Bundled);
+        assert!(!manager.is_mock_fallback());
+        assert_eq!(manager.device_list().len(), 1);
+        assert_eq!(manager.device_list()[0].source, DeviceSource::Adb);
+        assert!(!manager.device_list()[0].connected);
+        assert!(manager.has_device("emulator-5554"));
         assert!(manager
             .adb_status()
             .message
             .contains("failed to start logcat"));
-        assert_eq!(manager.device_list().len(), 1);
-        assert_eq!(manager.device_list()[0].source, DeviceSource::Mock);
-        assert!(manager.is_mock_fallback());
-        assert!(manager.has_device(MOCK_DEVICE_ID));
-        assert!(!manager.has_device("emulator-5554"));
     }
 
     #[test]

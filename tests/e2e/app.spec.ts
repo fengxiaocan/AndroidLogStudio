@@ -121,7 +121,7 @@ test('renders shell, adb status, and sends refresh_devices', async ({ page }) =>
 
     await page.addInitScript((port) => {
       window.als = {
-        version: '0.1.0',
+        version: '1.0.0',
         getEngineUrl: async () => `ws://127.0.0.1:${port}/ws`,
       };
     }, address.port);

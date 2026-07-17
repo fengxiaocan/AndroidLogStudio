@@ -162,6 +162,12 @@ async fn handle_socket(socket: WebSocket) {
     let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut manager = DeviceManager::start(&project_root).await;
     let mut ticker = time::interval(Duration::from_millis(250));
+    // When no devices are online, re-scan periodically so plugging in a phone
+    // is picked up without requiring a manual Refresh click.
+    let mut auto_scan = time::interval(Duration::from_secs(3));
+    auto_scan.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    // Skip the immediate first tick — start() already scanned once.
+    auto_scan.tick().await;
 
     if !send_server_message(&mut sender, &device_list_message(&manager)).await {
         return;
@@ -175,6 +181,38 @@ async fn handle_socket(socket: WebSocket) {
 
     loop {
         tokio::select! {
+            _ = auto_scan.tick() => {
+                // Only auto-scan while idle (no ADB devices listed / all offline mock-less).
+                // Avoid restarting logcat streams for already-online devices.
+                let has_online_adb = manager.device_list().iter().any(|d| {
+                    d.source == crate::log_entry::DeviceSource::Adb && d.connected
+                });
+                if has_online_adb || manager.is_mock_fallback() {
+                    continue;
+                }
+                let before: Vec<_> = manager
+                    .device_list()
+                    .iter()
+                    .map(|d| (d.device_id.clone(), d.connected))
+                    .collect();
+                manager.refresh(&project_root).await;
+                let after: Vec<_> = manager
+                    .device_list()
+                    .iter()
+                    .map(|d| (d.device_id.clone(), d.connected))
+                    .collect();
+                if before != after || manager.device_list().iter().any(|d| d.connected) {
+                    if !send_adb_status(&mut sender, manager.adb_status()).await {
+                        break;
+                    }
+                    if !send_server_message(&mut sender, &device_list_message(&manager)).await {
+                        break;
+                    }
+                    if !send_refresh_device_state(&mut sender, &manager).await {
+                        break;
+                    }
+                }
+            }
             _ = ticker.tick() => {
                 if manager.poll_logcat_exits().await {
                     manager.refresh_adb_status_message();

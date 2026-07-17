@@ -40,8 +40,45 @@ function startEngine() {
     return;
   }
 
-  engineProcess = spawn(engineBinaryPath(), [], {
-    env: { ...process.env, ALS_ENGINE_TOKEN: engineToken },
+  const isPackaged = app.isPackaged;
+  const engineCwd = isPackaged 
+    ? path.join(process.resourcesPath) 
+    : process.cwd();
+
+  const binPath = engineBinaryPath();
+
+  // Best-effort: ensure the engine binary is executable (helps after packaging on Linux)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { chmodSync, existsSync } = require('node:fs');
+    if (existsSync(binPath)) {
+      chmodSync(binPath, 0o755);
+    } else if (isPackaged) {
+      console.error(`[als-engine] Packaged engine binary not found at ${binPath}. Bundled exec may be misconfigured.`);
+    }
+  } catch {
+    // ignore
+  }
+
+  // Provide a user-writable log root. In packaged installs the engine cwd (resources)
+  // is usually not writable by the user.
+  const logRoot = isPackaged
+    ? path.join(app.getPath('userData'), 'logs')
+    : path.join(process.cwd(), 'logs');
+
+  // Provide the base directory where bundled resources (engine + libs) live.
+  // In packaged: resourcesPath (where extraResources are placed)
+  // In dev: project cwd
+  const resourcesBase = isPackaged ? process.resourcesPath : process.cwd();
+
+  engineProcess = spawn(binPath, [], {
+    cwd: engineCwd,
+    env: {
+      ...process.env,
+      ALS_ENGINE_TOKEN: engineToken,
+      ALS_LOG_ROOT: logRoot,
+      ALS_RESOURCES_PATH: resourcesBase,
+    },
   });
 
   engineProcess.stdout.on('data', (data: Buffer) => {
@@ -77,9 +114,15 @@ function startEngine() {
 }
 
 async function createWindow() {
+  // Resolve app icon for window (works in dev + packaged)
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png') // packaged apps usually embed via electron-builder
+    : path.join(process.cwd(), 'build', 'icon.png');
+
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    icon: iconPath,
     webPreferences: {
       // Preload must be CJS (.cjs). With package.json "type":"module", a
       // .js preload is treated as ESM and fails silently under sandbox,

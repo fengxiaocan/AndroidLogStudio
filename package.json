@@ -1,6 +1,12 @@
 {
   "name": "android-logcat-studio",
-  "version": "0.1.0",
+  "version": "1.0.1",
+  "description": "Professional standalone Android logcat viewer with advanced filtering, multi-device support and high performance.",
+  "author": {
+    "name": "Android Logcat Studio Contributors",
+    "email": "example@example.com"
+  },
+  "homepage": "https://github.com/example/android-logcat-studio",
   "private": true,
   "type": "module",
   "main": "dist/main/main.js",
@@ -8,6 +14,8 @@
     "dev": "vite --host 127.0.0.1",
     "dev:electron": "npm run build && electron .",
     "build": "npm run engine:build && tsc --noEmit && tsc -p tsconfig.main.json && cp src/main/preload.cjs dist/main/preload.cjs && vite build",
+    "build:release": "cargo build -p als-engine --release && tsc --noEmit && tsc -p tsconfig.main.json && cp src/main/preload.cjs dist/main/preload.cjs && vite build",
+    "package:deb": "bash scripts/package-deb.sh",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "engine:build": "cargo build -p als-engine",
@@ -18,7 +26,6 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "electron": "latest",
     "react": "latest",
     "react-dom": "latest",
     "react-virtuoso": "latest",
@@ -32,9 +39,49 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@types/ws": "^8.18.1",
+    "electron": "latest",
     "typescript": "latest",
     "vite": "latest",
     "vitest": "latest",
     "ws": "^8.21.0"
+  },
+  "build": {
+    "appId": "studio.android.logcat",
+    "productName": "Android Logcat Studio",
+    "desktopName": "android-logcat-studio",
+    "icon": "build/icon.png",
+    "files": [
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "target/release/als-engine",
+        "to": "engine/als-engine"
+      },
+      {
+        "from": "libs/linux",
+        "to": "libs/linux"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "linux": {
+      "target": "deb",
+      "category": "Utility",
+      "executableName": "android-logcat-studio",
+      "maintainer": "Android Logcat Studio Team <example@example.com>",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "Android Logcat Studio",
+          "Comment": "Professional standalone Android logcat viewer with advanced filtering, multi-device support and high performance.",
+          "Categories": "Development;Utility;",
+          "Keywords": "android;logcat;adb;log;debug;developer"
+        }
+      }
+    },
+    "afterPack": "./scripts/fix-exec-permissions.cjs"
   }
 }

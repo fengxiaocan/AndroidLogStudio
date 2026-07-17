@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Android Logcat Studio
+Comment=Professional standalone Android logcat viewer with advanced filtering, multi-device support and high performance.
+Exec=/usr/bin/android-logcat-studio %U
+Terminal=false
+Type=Application
+Icon=android-logcat-studio
+StartupWMClass=Android Logcat Studio
+Categories=Development;
+Keywords=android;logcat;adb;logs;debug;developer;studio;
+MimeType=application/x-logcat;
+StartupNotify=true
+X-GNOME-UsesNotifications=true

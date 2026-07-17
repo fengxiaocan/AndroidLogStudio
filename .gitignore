@@ -7,3 +7,31 @@ target/
 test-results/
 playwright-report/
 blob-report/
+logs/
+engine/logs/
+# Bundled platform-tools are large binaries — keep only .gitkeep in git.
+# Place adb/fastboot under libs/{linux,macos,windows}/ locally for packaging.
+libs/**/adb
+libs/**/adb.exe
+libs/**/fastboot
+libs/**/fastboot.exe
+libs/**/etc1tool
+libs/**/etc1tool.exe
+libs/**/hprof-conv
+libs/**/hprof-conv.exe
+libs/**/make_f2fs
+libs/**/make_f2fs.exe
+libs/**/make_f2fs_casefold
+libs/**/make_f2fs_casefold.exe
+libs/**/mke2fs
+libs/**/mke2fs.exe
+libs/**/sqlite3
+libs/**/sqlite3.exe
+libs/**/lib64/
+libs/**/*.dll
+libs/**/NOTICE.txt
+libs/**/source.properties
+libs/**/mke2fs.conf
+libs/**/META-INF/
+libs/mac/
+libs/win/

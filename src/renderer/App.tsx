@@ -11,6 +11,7 @@ import { buildExportFileName } from './export/fileName';
 import { t } from './settings/i18n';
 import { useAppStore, type FilterLevel } from './state/appStore';
 import type { ExportMode, ServerMessage } from './types/protocol';
+import { LogcatIcon } from './components/icons/LogcatIcon';
 
 type ExportReadyMessage = Extract<ServerMessage, { type: 'export_ready' }>;
 
@@ -96,7 +97,12 @@ export function App() {
 
     hasConnectedRef.current = true;
     clientRef.current = new EngineClient(onServerMessage);
-    void clientRef.current.connect();
+
+    clientRef.current.connect().catch((err) => {
+      console.error('Failed to connect to engine:', err);
+      // The UI will stay in disconnected state; adb status may remain pending.
+      // In a future iteration we can surface a visible error banner.
+    });
   }, [onServerMessage]);
 
   // On active device change: request snapshot + re-apply filter (export/disconnect features).
@@ -235,7 +241,10 @@ export function App() {
     <main className="app-shell">
       <header className="toolbar">
         <div className="toolbar__left">
-          <h1>{t(locale, 'appTitle')}</h1>
+          <div className="app-title">
+            <LogcatIcon size={20} className="app-title__icon" />
+            <h1>{t(locale, 'appTitle')}</h1>
+          </div>
           <DeviceSelect
             devices={devices}
             activeDeviceId={activeDeviceId}

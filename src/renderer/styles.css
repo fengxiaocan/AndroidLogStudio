@@ -68,6 +68,18 @@ input {
   white-space: nowrap;
 }
 
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-title__icon {
+  flex-shrink: 0;
+  color: #3ddc84;
+  opacity: 0.95;
+}
+
 .device-select {
   min-width: 220px;
   max-width: 360px;
